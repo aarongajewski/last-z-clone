@@ -185,7 +185,7 @@ export function makeStage(n: number): StageDef {
     if (kind === 'brute' && t < FIRST_BRUTE_AT) kind = 'walker';
     const count =
       kind === 'brute'
-        ? Math.max(1, Math.round((1 + n * 0.12) * ramp))
+        ? Math.max(1, Math.round((1 + n * 0.1) * ramp))
         : Math.max(2, Math.round((4 + n * 0.2) * row.density * ramp * (kind === 'runner' ? 0.8 : 1)));
     const interval = kind === 'brute' ? 1 : kind === 'runner' ? 0.3 : 0.45;
     if (t + (count - 1) * interval > row.bossAt - 1) break;
