@@ -1,7 +1,9 @@
 # Last Z Clone
 
 Browser-based clone of *Last Z: Survival Shooter*, built to be played on an iPhone from
-GitHub Pages: https://aarongajewski.github.io/last-z-clone/
+GitHub Pages.
+
+Live URL: https://aarongajewski.github.io/last-z-clone/
 
 Stack: Phaser 3 + TypeScript + Vite + `vite-plugin-pwa`. Fixed 540x1170 portrait design
 resolution scaled with `Scale.FIT`; installable to the Home Screen as a standalone PWA.
