@@ -89,6 +89,8 @@ export class StageScene extends Phaser.Scene {
   tutorial: TutorialState = createTutorial(false);
   /** Public so automation can steer without synthesising touch events. */
   touch!: TouchInput;
+  /** Every soldier loss with its cause; read by the balance bot. */
+  lossLog: { at: number; cause: string; lost: number; soldiers: number }[] = [];
 
   private road!: Phaser.GameObjects.TileSprite;
   private timeline!: Timeline;
@@ -150,6 +152,7 @@ export class StageScene extends Phaser.Scene {
     this.rapidUntil = 0;
     this.lastBossShake = 0;
     this.powerUps = EMPTY_POWERUPS;
+    this.lossLog = [];
     this.timeline = new Timeline(buildSchedule(this.stage));
     this.scheduledDrops = scheduledPickups(this.stage.bossAt);
     this.nextScheduledDrop = 0;
@@ -661,7 +664,7 @@ export class StageScene extends Phaser.Scene {
     const enemy = enemyObj as Enemy;
     if (!enemy.active || this.result) return;
     enemy.despawn();
-    this.hurtSquad(enemy.def.damage, enemy.x, enemy.y);
+    this.hurtSquad(enemy.def.damage, enemy.x, enemy.y, enemy.def.kind);
   };
 
   private onBarrierHitsSquad = (barrierObj: unknown): void => {
@@ -669,14 +672,14 @@ export class StageScene extends Phaser.Scene {
     if (!barrier.active || this.result) return;
     this.fx.deathBurst(barrier.x, barrier.y, COLORS.barrier, 16);
     barrier.despawn();
-    this.hurtSquad(this.stage.barrierDamage, this.squad.x, this.squad.y);
+    this.hurtSquad(this.stage.barrierDamage, this.squad.x, this.squad.y, `barrier-${barrier.side}`);
   };
 
   private onProjectileHitsSquad = (globObj: unknown): void => {
     const glob = globObj as Projectile;
     if (!glob.active || this.result) return;
     glob.despawn();
-    this.hurtSquad(glob.damage, glob.x, glob.y);
+    this.hurtSquad(glob.damage, glob.x, glob.y, 'acid');
   };
 
   private onPickupReachesSquad = (pickupObj: unknown): void => {
@@ -695,7 +698,7 @@ export class StageScene extends Phaser.Scene {
     this.leaked += 1;
   }
 
-  private hurtSquad(damage: number, x: number, y: number): void {
+  private hurtSquad(damage: number, x: number, y: number, cause: string): void {
     const now = this.time.now;
     if (now < this.shieldUntil) {
       this.fx.hitSparks(x, y, 0x4cc9f0, 6);
@@ -703,6 +706,7 @@ export class StageScene extends Phaser.Scene {
     }
     const lost = this.squad.takeHit(damage, now);
     if (lost <= 0) return;
+    this.lossLog.push({ at: Math.round(this.elapsed * 10) / 10, cause, lost, soldiers: this.squad.count });
     this.fx.deathBurst(x, y, 0xff4d4d, 8 + lost * 4);
     this.cameras.main.shake(140, 0.005);
     this.pulseScreen(0xff2a2a, 0.35);

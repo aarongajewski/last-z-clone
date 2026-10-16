@@ -227,6 +227,20 @@ await page.evaluate(() => {
           reason = 'dodge';
         }
       }
+      // Never steer the formation (about 45 px either side of the centre) into a half-width wall
+      // that is about to reach, or is passing, the front row.
+      const HALF_FORMATION = 45;
+      const liveWalls = active(s.barriers).filter((b) => b.body.enable && b.side !== 'full' && b.y > sy - 230 && b.y < sy + 40);
+      for (const wall of liveWalls) {
+        const edge = wall.side === 'left' ? W / 2 - 10 : W / 2 + 10;
+        if (wall.side === 'left' && target - HALF_FORMATION < edge) {
+          target = edge + HALF_FORMATION + 6;
+          reason = `${reason}!wall`;
+        } else if (wall.side === 'right' && target + HALF_FORMATION > edge) {
+          target = edge - HALF_FORMATION - 6;
+          reason = `${reason}!wall`;
+        }
+      }
       s.touch.targetX = clamp(target, 50, W - 50);
       this.reason = reason;
 
@@ -249,6 +263,7 @@ await page.evaluate(() => {
         tutorial: s.tutorial.active,
         fps: game.loop.actualFps,
         reason,
+        losses: s.lossLog,
       };
     },
   };
@@ -327,6 +342,7 @@ const outcome = {
   minSoldiers: Number.isFinite(minSoldiers) ? minSoldiers : null,
   avgFps: fpsCount ? Math.round(fpsSum / fpsCount) : null,
   bossReached: bossSeen,
+  losses: last?.losses ?? [],
   errors,
   shots,
 };
