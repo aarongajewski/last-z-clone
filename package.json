@@ -1,7 +1,7 @@
 {
   "name": "last-z-clone",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser-based clone of Last Z: Survival Shooter, built for iPhone Safari / Home Screen.",
   "type": "module",
   "scripts": {
@@ -12,7 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "icons": "node scripts/make-icons.mjs",
+    "art": "node scripts/import-kenney.mjs",
     "smoke": "node scripts/smoke-check.mjs",
+    "bot": "node scripts/autoplay.mjs",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
