@@ -60,6 +60,35 @@
         touch-action: none;
         image-rendering: auto;
       }
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 5;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: #0b0f14;
+        color: #e6edf3;
+        pointer-events: none;
+        transition: opacity 0.25s ease-out;
+      }
+      #splash.hidden {
+        opacity: 0;
+      }
+      #splash h1 {
+        margin: 0;
+        font-size: 64px;
+        font-weight: 900;
+        letter-spacing: 2px;
+        color: #ffd166;
+      }
+      #splash p {
+        margin: 0;
+        font-size: 18px;
+        color: #8b949e;
+      }
       #rotate {
         display: none;
         position: fixed;
@@ -135,6 +164,11 @@
   </head>
   <body>
     <div id="game"></div>
+    <!-- Painted before the engine loads so the first screen is not a blank canvas; MenuScene removes it. -->
+    <div id="splash" aria-hidden="true">
+      <h1>LAST Z</h1>
+      <p>Loading&hellip;</p>
+    </div>
     <div id="rotate">Rotate your phone to portrait to play</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

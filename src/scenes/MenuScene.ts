@@ -4,6 +4,14 @@ import { COLORS, FONT, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
 import { FACING_DOWN, FACING_UP, FRAMES, SPRITE_SCALE, TEXTURES } from '../game/textures';
 import { saveStore } from '../meta/saveStore';
 
+/** The HTML loading screen from index.html fades out once the title scene can draw. */
+function hideHtmlSplash(): void {
+  const splash = document.getElementById('splash');
+  if (!splash) return;
+  splash.classList.add('hidden');
+  window.setTimeout(() => splash.remove(), 300);
+}
+
 export class MenuScene extends Phaser.Scene {
   constructor() {
     super(SCENES.menu);
@@ -11,6 +19,7 @@ export class MenuScene extends Phaser.Scene {
 
   create(): void {
     const cx = GAME_WIDTH / 2;
+    hideHtmlSplash();
 
     this.add.tileSprite(cx, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, TEXTURES.road).setAlpha(0.5);
 
