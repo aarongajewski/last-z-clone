@@ -64,13 +64,18 @@ export class Timeline {
   /** Returns every event due at or before `time` that has not been returned yet. */
   advance(time: number): SpawnEvent[] {
     const due: SpawnEvent[] = [];
+    this.drain(time, (event) => due.push(event));
+    return due;
+  }
+
+  /** Like advance(), but hands each due event to `handle` without allocating a list; used every frame. */
+  drain(time: number, handle: (event: SpawnEvent) => void): void {
     while (this.index < this.events.length) {
       const next = this.events[this.index];
       if (!next || next.at > time) break;
-      due.push(next);
       this.index++;
+      handle(next);
     }
-    return due;
   }
 
   get remaining(): number {

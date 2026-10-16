@@ -66,3 +66,13 @@ export function fireIntervalMs(baseMs: number, fireRate: number, soldiers: numbe
   const perSquad = baseMs / (Math.max(fireRate, 1e-6) * Math.max(1, soldiers));
   return Math.max(floorMs, perSquad);
 }
+
+/**
+ * When the squad wants to fire faster than the floor allows, each bullet carries the
+ * difference as extra damage, so damage per second stays proportional to
+ * soldiers x fire rate x damage however large the squad gets.
+ */
+export function fireDamageMultiplier(baseMs: number, fireRate: number, soldiers: number, floorMs: number): number {
+  const wanted = baseMs / (Math.max(fireRate, 1e-6) * Math.max(1, soldiers));
+  return wanted >= floorMs ? 1 : floorMs / wanted;
+}

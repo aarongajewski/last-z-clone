@@ -1,8 +1,19 @@
 import { BUILDING_ORDER, STARTING_RESOURCES, type BuildingId, type Resources } from '../data/buildings';
 import { HEROES, type HeroId } from '../data/heroes';
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const SAVE_KEY = 'lastz.save';
+
+export interface Settings {
+  sfx: boolean;
+  music: boolean;
+  /** Stage 1 shows the tutorial until this is set; Settings can clear it to replay. */
+  tutorialDone: boolean;
+  /** The Safari "Add to Home Screen" hint was closed. */
+  installHintDismissed: boolean;
+}
+
+export const DEFAULT_SETTINGS: Settings = { sfx: true, music: true, tutorialDone: false, installHintDismissed: false };
 
 export interface BuildJob {
   building: BuildingId;
@@ -36,6 +47,7 @@ export interface SaveData {
   stages: Record<string, StageRecord>;
   highestUnlocked: number;
   hero: HeroId;
+  settings: Settings;
 }
 
 export function defaultSave(now: number): SaveData {
@@ -51,7 +63,12 @@ export function defaultSave(now: number): SaveData {
     stages: {},
     highestUnlocked: 1,
     hero: 'sarge',
+    settings: { ...DEFAULT_SETTINGS },
   };
+}
+
+export function updateSettings(save: SaveData, patch: Partial<Settings>): SaveData {
+  return { ...save, settings: { ...save.settings, ...patch } };
 }
 
 export function emptyStageRecord(): StageRecord {
@@ -62,7 +79,15 @@ type Raw = Record<string, unknown>;
 
 /** Index `v` upgrades a save from version `v` to `v + 1`. Add an entry here whenever SAVE_VERSION bumps. */
 export type Migration = (save: Raw) => Raw;
-export const MIGRATIONS: Record<number, Migration> = {};
+export const MIGRATIONS: Record<number, Migration> = {
+  // v1 -> v2: audio, tutorial, and install-hint settings. Players who already cleared a
+  // stage have seen the mechanics, so the tutorial stays off for them.
+  1: (save) => {
+    const stages = isObject(save.stages) ? Object.values(save.stages) : [];
+    const cleared = stages.some((r) => isObject(r) && typeof r.clears === 'number' && r.clears > 0);
+    return { ...save, settings: { ...DEFAULT_SETTINGS, tutorialDone: cleared } };
+  },
+};
 
 export interface MigrateOptions {
   version: number;
@@ -109,6 +134,14 @@ function fillDefaults(data: Raw, fresh: SaveData, version: number): SaveData {
   const stages = isObject(data.stages) ? data.stages : {};
   const build = isObject(data.build) ? data.build : null;
   const hero = typeof data.hero === 'string' && data.hero in HEROES ? (data.hero as HeroId) : fresh.hero;
+  const rawSettings = isObject(data.settings) ? data.settings : {};
+  const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
+  const settings: Settings = {
+    sfx: bool(rawSettings.sfx, fresh.settings.sfx),
+    music: bool(rawSettings.music, fresh.settings.music),
+    tutorialDone: bool(rawSettings.tutorialDone, fresh.settings.tutorialDone),
+    installHintDismissed: bool(rawSettings.installHintDismissed, fresh.settings.installHintDismissed),
+  };
 
   const levels = Object.fromEntries(
     BUILDING_ORDER.map((id) => [id, Math.max(1, Math.round(num(buildings[id], 1)))]),
@@ -154,6 +187,7 @@ function fillDefaults(data: Raw, fresh: SaveData, version: number): SaveData {
     stages: stageRecords,
     highestUnlocked: Math.max(1, Math.round(num(data.highestUnlocked, 1))),
     hero,
+    settings,
   };
 }
 
