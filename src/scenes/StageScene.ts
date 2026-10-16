@@ -1,41 +1,48 @@
 import Phaser from 'phaser';
-import { COLORS, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
-import { aimVelocity, approach } from '../game/squadMath';
-import { TEXTURES } from '../game/textures';
+import { COLORS, FONT, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
+import { BOSS, ENEMIES, type EnemyKind } from '../data/enemies';
+import { SQUAD } from '../data/squad';
+import { STAGE_1, type BarrierSide, type GateEvent, type StageDef } from '../data/stages';
+import { Barrier } from '../game/Barrier';
+import { Boss } from '../game/Boss';
+import { Bullet } from '../game/Bullet';
+import { Enemy } from '../game/Enemy';
+import { Gate } from '../game/Gate';
+import { Projectile } from '../game/Projectile';
+import { Squad } from '../game/Squad';
+import { fireIntervalMs, gateLabel, isPenalty } from '../game/gateMath';
+import { aimVelocity } from '../game/squadMath';
+import { BARRIER_HEIGHT, GATE_HEIGHT, TEXTURES } from '../game/textures';
+import { Timeline, buildSchedule, stageProgress, type SpawnEvent } from '../game/waveSchedule';
 import { TouchInput } from '../ui/TouchInput';
+import type { HudState } from './HudScene';
+import type { ResultsData } from './ResultsScene';
 
-const SQUAD_Y = GAME_HEIGHT - 200;
-const SQUAD_MARGIN = 60;
-const SQUAD_FOLLOW_RATE = 18;
-const FIRE_INTERVAL_MS = 170;
-const BULLET_SPEED = 1100;
-const AIM_CONE_DEG = 30;
-const BARREL_OFFSETS = [-24, 0, 24];
-const ZOMBIE_SPAWN_MS = 750;
-const ZOMBIE_HP = 3;
-const ZOMBIE_SPEED = { min: 90, max: 170 };
-const HIT_FLASH_MS = 50;
-const ROAD_SCROLL = 240;
-const HUD_TOP = 100;
+type Target = { x: number; y: number; vx: number; vy: number };
+type Collider = Phaser.Types.Physics.Arcade.ArcadePhysicsCallback;
 
-type ArcadeImage = Phaser.Physics.Arcade.Image;
+const SPAWN_Y = -60;
+const RESULTS_DELAY_MS = 1400;
 
-/**
- * Phase 1 "hello stage": the squad sits near the bottom, follows horizontal drag,
- * and auto-fires at placeholder zombies walking down the road.
- */
 export class StageScene extends Phaser.Scene {
-  squad!: Phaser.GameObjects.Image;
+  stage: StageDef = STAGE_1;
+  squad!: Squad;
+  boss: Boss | null = null;
   kills = 0;
   leaked = 0;
+  elapsed = 0;
+  result: 'won' | 'lost' | null = null;
 
   private road!: Phaser.GameObjects.TileSprite;
   private touch!: TouchInput;
+  private timeline!: Timeline;
   private bullets!: Phaser.Physics.Arcade.Group;
-  private zombies!: Phaser.Physics.Arcade.Group;
-  private hud!: Phaser.GameObjects.Text;
+  private enemies!: Phaser.Physics.Arcade.Group;
+  private gates!: Phaser.Physics.Arcade.Group;
+  private barriers!: Phaser.Physics.Arcade.Group;
+  private projectiles!: Phaser.Physics.Arcade.Group;
+  private countLabel!: Phaser.GameObjects.Text;
   private fireAccumulator = 0;
-  private barrelIndex = 0;
 
   constructor() {
     super(SCENES.stage);
@@ -44,160 +51,338 @@ export class StageScene extends Phaser.Scene {
   create(): void {
     this.kills = 0;
     this.leaked = 0;
+    this.elapsed = 0;
+    this.result = null;
+    this.boss = null;
     this.fireAccumulator = 0;
-    this.barrelIndex = 0;
+    this.timeline = new Timeline(buildSchedule(this.stage));
 
     this.road = this.add.tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, TEXTURES.road);
-    this.squad = this.add.image(GAME_WIDTH / 2, SQUAD_Y, TEXTURES.squad).setDepth(5);
-    this.touch = new TouchInput(this, this.squad.x, GAME_WIDTH, SQUAD_MARGIN);
+    this.squad = new Squad(this, GAME_WIDTH / 2, SQUAD.y, this.stage.startingSoldiers);
+    this.touch = new TouchInput(this, this.squad.x, GAME_WIDTH, SQUAD.marginX);
 
-    this.bullets = this.physics.add.group({
-      classType: Phaser.Physics.Arcade.Image,
-      defaultKey: TEXTURES.bullet,
-      maxSize: 200,
-    });
-    this.zombies = this.physics.add.group({
-      classType: Phaser.Physics.Arcade.Image,
-      defaultKey: TEXTURES.zombie,
-      maxSize: 60,
-    });
-    this.physics.add.overlap(this.bullets, this.zombies, this.onBulletHitsZombie, undefined, this);
+    this.bullets = this.physics.add.group({ classType: Bullet, maxSize: 200, runChildUpdate: true });
+    this.enemies = this.physics.add.group({ classType: Enemy, maxSize: 80, runChildUpdate: true });
+    this.gates = this.physics.add.group({ classType: Gate, maxSize: 12, runChildUpdate: true });
+    this.barriers = this.physics.add.group({ classType: Barrier, maxSize: 8, runChildUpdate: true });
+    this.projectiles = this.physics.add.group({ classType: Projectile, maxSize: 30, runChildUpdate: true });
 
-    this.time.addEvent({ delay: ZOMBIE_SPAWN_MS, loop: true, callback: this.spawnZombie, callbackScope: this });
-    for (let i = 0; i < 3; i++) this.spawnZombie(-120 - i * 220);
+    this.physics.add.overlap(this.bullets, this.enemies, this.onBulletHitsEnemy as Collider, undefined, this);
+    this.physics.add.overlap(this.bullets, this.barriers, this.onBulletHitsBarrier as Collider, undefined, this);
+    this.physics.add.overlap(this.enemies, this.squad.soldiers, this.onEnemyReachesSquad as Collider, undefined, this);
+    this.physics.add.overlap(this.barriers, this.squad.soldiers, this.onBarrierHitsSquad as Collider, undefined, this);
+    this.physics.add.overlap(this.projectiles, this.squad.soldiers, this.onProjectileHitsSquad as Collider, undefined, this);
 
-    const hudStyle: Phaser.Types.GameObjects.Text.TextStyle = {
-      fontFamily: 'system-ui, sans-serif',
-      fontSize: '28px',
-      fontStyle: '700',
-      color: COLORS.text,
-      stroke: '#000000',
-      strokeThickness: 6,
-    };
-    this.hud = this.add.text(24, HUD_TOP, '', hudStyle).setDepth(10);
-    this.add.text(GAME_WIDTH - 24, HUD_TOP, 'HELLO STAGE', { ...hudStyle, color: COLORS.accent }).setOrigin(1, 0).setDepth(10);
-    this.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT - 70, 'Drag left / right to steer', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '22px',
-        color: '#8b949e',
+    this.events.on(Enemy.LEAKED, this.onEnemyLeaked, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.events.off(Enemy.LEAKED, this.onEnemyLeaked, this));
+
+    this.countLabel = this.add
+      .text(this.squad.x, this.squad.y - 58, '', {
+        fontFamily: FONT,
+        fontSize: '26px',
+        fontStyle: '800',
+        color: COLORS.text,
+        stroke: '#000000',
+        strokeThickness: 6,
       })
       .setOrigin(0.5)
-      .setDepth(10);
-    this.updateHud();
+      .setDepth(6);
+
+    this.scene.launch(SCENES.hud);
+    this.scene.bringToTop(SCENES.hud);
+    this.banner('GET READY', COLORS.accent, 1100);
   }
 
-  update(_time: number, delta: number): void {
-    this.road.tilePositionY -= (ROAD_SCROLL * delta) / 1000;
-    this.squad.x = approach(this.squad.x, this.touch.targetX, SQUAD_FOLLOW_RATE, delta);
+  update(time: number, delta: number): void {
+    if (this.result) return;
 
+    this.elapsed += delta / 1000;
+    this.road.tilePositionY -= (this.stage.roadSpeed * delta) / 1000;
+    this.squad.update(delta, this.touch.targetX);
+    this.countLabel.setPosition(this.squad.x, this.squad.y - 58).setText(`x${this.squad.count}`);
+
+    for (const event of this.timeline.advance(this.elapsed)) this.dispatch(event);
+
+    const interval = fireIntervalMs(SQUAD.baseFireIntervalMs, this.squad.stats.fireRate, this.squad.count, SQUAD.minFireIntervalMs);
     this.fireAccumulator += delta;
-    while (this.fireAccumulator >= FIRE_INTERVAL_MS) {
-      this.fireAccumulator -= FIRE_INTERVAL_MS;
+    while (this.fireAccumulator >= interval) {
+      this.fireAccumulator -= interval;
       this.fire();
     }
 
-    this.bullets.children.iterate((child) => {
-      const bullet = child as ArcadeImage;
-      if (bullet.active && (bullet.y < -30 || bullet.x < -30 || bullet.x > GAME_WIDTH + 30)) {
-        bullet.disableBody(true, true);
-      }
-      return null;
-    });
-
-    this.zombies.children.iterate((child) => {
-      const zombie = child as ArcadeImage;
-      if (!zombie.active) return null;
-      if (zombie.y > GAME_HEIGHT + 40) {
-        zombie.disableBody(true, true);
-        this.leaked += 1;
-        this.updateHud();
-      } else if (zombie.tintFill && this.time.now >= (zombie.getData('flashUntil') as number)) {
-        zombie.clearTint();
-      }
-      return null;
-    });
+    this.checkGateCrossings();
+    if (this.boss?.active) this.boss.tick(time, delta);
   }
 
-  private spawnZombie(startY = -40): void {
-    const x = Phaser.Math.Between(50, GAME_WIDTH - 50);
-    const zombie = this.zombies.get(x, startY) as ArcadeImage | null;
-    if (!zombie) return;
-    zombie.enableBody(true, x, startY, true, true);
-    zombie.setDepth(4).clearTint();
-    zombie.setData('hp', ZOMBIE_HP);
-    zombie.setVelocity(0, Phaser.Math.Between(ZOMBIE_SPEED.min, ZOMBIE_SPEED.max));
+  hudState(): HudState {
+    return {
+      stageName: this.stage.name,
+      progress: stageProgress(this.elapsed, this.stage.bossAt),
+      soldiers: this.squad.count,
+      maxSoldiers: SQUAD.maxSoldiers,
+      fireRate: this.squad.stats.fireRate,
+      kills: this.kills,
+      boss: this.boss?.active && this.boss.phase !== 'dead' ? { hp: Math.max(0, this.boss.hp), maxHp: this.boss.maxHp } : null,
+    };
   }
+
+  // ---- Spawning ---------------------------------------------------------------
+
+  private dispatch(event: SpawnEvent): void {
+    switch (event.type) {
+      case 'enemy':
+        this.spawnEnemy(event.kind, event.xFraction * GAME_WIDTH, SPAWN_Y);
+        break;
+      case 'gate':
+        this.spawnGateRow(event);
+        break;
+      case 'barrier':
+        this.spawnBarrier(event.side, event.hp);
+        break;
+      case 'boss':
+        this.spawnBoss();
+        break;
+    }
+  }
+
+  private spawnEnemy(kind: EnemyKind, x: number, y: number): void {
+    const enemy = this.enemies.get(x, y) as Enemy | null;
+    enemy?.spawn(ENEMIES[kind], x, y);
+  }
+
+  private spawnGateRow(event: GateEvent): void {
+    const y = SPAWN_Y - GATE_HEIGHT / 2;
+    if (event.left) (this.gates.get(0, y) as Gate | null)?.spawn('left', event.left, y, this.stage.roadSpeed);
+    if (event.right) (this.gates.get(0, y) as Gate | null)?.spawn('right', event.right, y, this.stage.roadSpeed);
+  }
+
+  private spawnBarrier(side: BarrierSide, hp: number): void {
+    const y = SPAWN_Y - BARRIER_HEIGHT / 2;
+    (this.barriers.get(0, y) as Barrier | null)?.spawn(side, hp, y, this.stage.roadSpeed);
+  }
+
+  private spawnBoss(): void {
+    if (!this.boss) {
+      this.boss = new Boss(this, GAME_WIDTH / 2, -150);
+      this.physics.add.overlap(this.bullets, this.boss, this.onBulletHitsBoss as Collider, undefined, this);
+    }
+    this.boss.spawn(GAME_WIDTH / 2, -150, {
+      spit: (x, y) => this.spawnProjectile(x, y),
+      summon: (x, y) => {
+        for (let i = 0; i < BOSS.summonCount; i++) {
+          const side = i % 2 === 0 ? -1 : 1;
+          this.spawnEnemy(BOSS.summon, Phaser.Math.Clamp(x + side * 110, 40, GAME_WIDTH - 40), y + 40);
+        }
+      },
+    });
+    this.banner('BOSS', COLORS.bad, 1200);
+    this.cameras.main.shake(300, 0.006);
+  }
+
+  private spawnProjectile(x: number, y: number): void {
+    const glob = this.projectiles.get(x, y) as Projectile | null;
+    glob?.launch(x, y, this.squad.x, this.squad.y, BOSS.spitSpeed, 1);
+  }
+
+  // ---- Firing -----------------------------------------------------------------
 
   private fire(): void {
-    const offset = BARREL_OFFSETS[this.barrelIndex % BARREL_OFFSETS.length] ?? 0;
-    this.barrelIndex += 1;
-    const fromX = this.squad.x + offset;
-    const fromY = this.squad.y - 36;
-
-    const bullet = this.bullets.get(fromX, fromY) as ArcadeImage | null;
+    const muzzle = this.squad.muzzle();
+    const bullet = this.bullets.get(muzzle.x, muzzle.y) as Bullet | null;
     if (!bullet) return;
-    bullet.enableBody(true, fromX, fromY, true, true);
-    bullet.setDepth(3);
-
-    const target = this.nearestZombie(fromX, fromY);
-    const velocity = target
-      ? aimVelocity(fromX, fromY, target.x, target.y, BULLET_SPEED, AIM_CONE_DEG)
-      : { x: 0, y: -BULLET_SPEED };
-    bullet.setVelocity(velocity.x, velocity.y);
-    bullet.setRotation(Math.atan2(velocity.y, velocity.x) + Math.PI / 2);
+    const target = this.nearestTarget(muzzle.x, muzzle.y);
+    let velocity = { x: 0, y: -SQUAD.bulletSpeed };
+    if (target) {
+      // Lead the shot by the target's travel during the bullet's flight.
+      const flight = Phaser.Math.Distance.Between(muzzle.x, muzzle.y, target.x, target.y) / SQUAD.bulletSpeed;
+      velocity = aimVelocity(
+        muzzle.x,
+        muzzle.y,
+        target.x + target.vx * flight,
+        target.y + target.vy * flight,
+        SQUAD.bulletSpeed,
+        SQUAD.aimConeDeg,
+      );
+    }
+    bullet.fire(muzzle.x, muzzle.y, velocity.x, velocity.y, SQUAD.bulletDamage);
   }
 
-  private nearestZombie(x: number, y: number): ArcadeImage | null {
-    let best: ArcadeImage | null = null;
+  private nearestTarget(x: number, y: number): Target | null {
+    let best: Target | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
-    this.zombies.children.iterate((child) => {
-      const zombie = child as ArcadeImage;
-      if (!zombie.active || zombie.y >= y) return null;
-      const distance = Phaser.Math.Distance.Between(x, y, zombie.x, zombie.y);
+    const consider = (candidate: Phaser.Physics.Arcade.Image, vx: number, vy: number) => {
+      if (!candidate.active || candidate.y >= y - 20) return;
+      const distance = Phaser.Math.Distance.Between(x, y, candidate.x, candidate.y);
       if (distance < bestDistance) {
         bestDistance = distance;
-        best = zombie;
+        best = { x: candidate.x, y: candidate.y, vx, vy };
       }
-      return null;
-    });
+    };
+    for (const child of this.enemies.getChildren()) consider(child as Enemy, 0, (child as Enemy).def.speed);
+    for (const child of this.barriers.getChildren()) consider(child as Barrier, 0, this.stage.roadSpeed);
+    if (this.boss?.active && this.boss.phase !== 'dead') consider(this.boss, this.boss.velocityX, 0);
     return best;
   }
 
-  private onBulletHitsZombie: Phaser.Types.Physics.Arcade.ArcadePhysicsCallback = (bulletObj, zombieObj) => {
-    const bullet = bulletObj as ArcadeImage;
-    const zombie = zombieObj as ArcadeImage;
-    if (!bullet.active || !zombie.active) return;
+  // ---- Gates ------------------------------------------------------------------
 
-    bullet.disableBody(true, true);
-    const hp = (zombie.getData('hp') as number) - 1;
-    zombie.setData('hp', hp);
-
-    if (hp > 0) {
-      zombie.setTintFill(0xffffff);
-      zombie.setData('flashUntil', this.time.now + HIT_FLASH_MS);
-      return;
+  private checkGateCrossings(): void {
+    for (const child of this.gates.getChildren()) {
+      const gate = child as Gate;
+      if (!gate.active || gate.triggered || gate.crossingY < this.squad.y) continue;
+      const taken = gate.coversX(this.squad.x);
+      gate.markCrossed(taken);
+      if (!taken) continue;
+      this.squad.applyGate(gate.effect);
+      const penalty = isPenalty(gate.effect);
+      this.floatText(this.squad.x, this.squad.y - 90, gateLabel(gate.effect), penalty ? COLORS.bad : COLORS.good);
+      if (penalty) this.cameras.main.shake(150, 0.004);
     }
-
-    this.kills += 1;
-    this.updateHud();
-    this.burst(zombie.x, zombie.y);
-    zombie.disableBody(true, true);
-  };
-
-  private burst(x: number, y: number): void {
-    const emitter = this.add.particles(x, y, TEXTURES.spark, {
-      speed: { min: 80, max: 260 },
-      lifespan: 320,
-      scale: { start: 1, end: 0 },
-      tint: [COLORS.zombie, COLORS.bullet, 0xffffff],
-      emitting: false,
-    });
-    emitter.setDepth(6).explode(10);
-    this.time.delayedCall(400, () => emitter.destroy());
   }
 
-  private updateHud(): void {
-    this.hud.setText(`Kills ${this.kills}   Leaked ${this.leaked}`);
+  // ---- Collisions -------------------------------------------------------------
+
+  private onBulletHitsEnemy = (bulletObj: unknown, enemyObj: unknown): void => {
+    const bullet = bulletObj as Bullet;
+    const enemy = enemyObj as Enemy;
+    if (!bullet.active || !enemy.active) return;
+    bullet.despawn();
+    if (enemy.hit(bullet.damage, this.time.now)) {
+      this.kills += 1;
+      this.burst(enemy.x, enemy.y, [enemy.def.tint, COLORS.bullet, 0xffffff], enemy.def.kind === 'brute' ? 18 : 10);
+      enemy.despawn();
+    }
+  };
+
+  private onBulletHitsBarrier = (bulletObj: unknown, barrierObj: unknown): void => {
+    const bullet = bulletObj as Bullet;
+    const barrier = barrierObj as Barrier;
+    if (!bullet.active || !barrier.active) return;
+    bullet.despawn();
+    if (barrier.hit(bullet.damage, this.time.now)) {
+      this.burst(barrier.x, barrier.y, [COLORS.barrier, COLORS.barrierDark, 0xffffff], 20);
+      barrier.despawn();
+    }
+  };
+
+  private onBulletHitsBoss = (a: unknown, b: unknown): void => {
+    // Group-vs-sprite overlaps hand the lone sprite over first, whatever order they were registered in.
+    const bullet = (a instanceof Bullet ? a : b) as Bullet;
+    const boss = (a instanceof Boss ? a : b) as Boss;
+    if (!bullet.active || !boss.active || boss.phase === 'dead') return;
+    bullet.despawn();
+    if (boss.hit(bullet.damage, this.time.now)) {
+      this.burst(boss.x, boss.y, [COLORS.bossBar, COLORS.bullet, 0xffffff], 40);
+      this.cameras.main.shake(400, 0.01);
+      boss.despawn();
+      this.endStage(true);
+    }
+  };
+
+  private onEnemyReachesSquad = (enemyObj: unknown): void => {
+    const enemy = enemyObj as Enemy;
+    if (!enemy.active || this.result) return;
+    enemy.despawn();
+    this.hurtSquad(enemy.def.damage, enemy.x, enemy.y);
+  };
+
+  private onBarrierHitsSquad = (barrierObj: unknown): void => {
+    const barrier = barrierObj as Barrier;
+    if (!barrier.active || this.result) return;
+    this.burst(barrier.x, barrier.y, [COLORS.barrier, COLORS.barrierDark], 16);
+    barrier.despawn();
+    this.hurtSquad(this.stage.barrierDamage, this.squad.x, this.squad.y);
+  };
+
+  private onProjectileHitsSquad = (globObj: unknown): void => {
+    const glob = globObj as Projectile;
+    if (!glob.active || this.result) return;
+    glob.despawn();
+    this.hurtSquad(glob.damage, glob.x, glob.y);
+  };
+
+  private onEnemyLeaked(): void {
+    this.leaked += 1;
+  }
+
+  private hurtSquad(damage: number, x: number, y: number): void {
+    const lost = this.squad.takeHit(damage);
+    if (lost <= 0) return;
+    this.burst(x, y, [0xff4d4d, COLORS.soldier, 0xffffff], 8 + lost * 4);
+    this.cameras.main.shake(140, 0.005);
+    this.floatText(this.squad.x, this.squad.y - 90, `-${lost}`, COLORS.bad);
+    if (!this.squad.alive) this.endStage(false);
+  }
+
+  // ---- Flow -------------------------------------------------------------------
+
+  private endStage(won: boolean): void {
+    if (this.result) return;
+    this.result = won ? 'won' : 'lost';
+    this.physics.pause();
+    this.banner(won ? 'STAGE CLEAR' : 'SQUAD LOST', won ? COLORS.good : COLORS.bad, RESULTS_DELAY_MS);
+    const data: ResultsData = {
+      won,
+      stageName: this.stage.name,
+      kills: this.kills,
+      soldiers: this.squad.count,
+      timeMs: Math.round(this.elapsed * 1000),
+    };
+    this.time.delayedCall(RESULTS_DELAY_MS, () => {
+      this.scene.stop(SCENES.hud);
+      this.scene.start(SCENES.results, data);
+    });
+  }
+
+  // ---- FX ---------------------------------------------------------------------
+
+  private burst(x: number, y: number, tint: number[], count: number): void {
+    const emitter = this.add.particles(x, y, TEXTURES.spark, {
+      speed: { min: 80, max: 280 },
+      lifespan: 350,
+      scale: { start: 1, end: 0 },
+      tint,
+      emitting: false,
+    });
+    emitter.setDepth(7).explode(count);
+    this.time.delayedCall(450, () => emitter.destroy());
+  }
+
+  private floatText(x: number, y: number, text: string, color: string): void {
+    const label = this.add
+      .text(x, y, text, {
+        fontFamily: FONT,
+        fontSize: '38px',
+        fontStyle: '900',
+        color,
+        stroke: '#000000',
+        strokeThickness: 8,
+      })
+      .setOrigin(0.5)
+      .setDepth(8);
+    this.tweens.add({ targets: label, y: y - 90, alpha: 0, duration: 900, ease: 'Cubic.easeOut', onComplete: () => label.destroy() });
+  }
+
+  private banner(text: string, color: string, holdMs: number): void {
+    const label = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, text, {
+        fontFamily: FONT,
+        fontSize: '84px',
+        fontStyle: '900',
+        color,
+        stroke: '#000000',
+        strokeThickness: 12,
+      })
+      .setOrigin(0.5)
+      .setDepth(9)
+      .setScale(0.6)
+      .setAlpha(0);
+    this.tweens.chain({
+      targets: label,
+      tweens: [
+        { scale: 1, alpha: 1, duration: 220, ease: 'Back.easeOut' },
+        { alpha: 0, duration: 300, delay: Math.max(0, holdMs - 520), onComplete: () => label.destroy() },
+      ],
+    });
   }
 }

@@ -53,7 +53,7 @@ export class MenuScene extends Phaser.Scene {
     this.tweens.add({ targets: prompt, alpha: 0.25, duration: 650, yoyo: true, repeat: -1 });
 
     this.add
-      .text(cx, GAME_HEIGHT - 90, 'Phase 1 pipeline proof. Drag to steer, squad auto-fires.', {
+      .text(cx, GAME_HEIGHT - 90, 'Drag to steer. Your squad fires on its own.\nGreen gates help, red gates hurt. Shoot the walls.', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '20px',
         color: '#8b949e',

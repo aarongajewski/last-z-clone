@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
 import { BootScene } from './scenes/BootScene';
+import { HudScene } from './scenes/HudScene';
 import { MenuScene } from './scenes/MenuScene';
+import { ResultsScene } from './scenes/ResultsScene';
 import { StageScene } from './scenes/StageScene';
 import { installTouchGuards } from './ui/TouchInput';
 
@@ -28,7 +30,7 @@ const game = new Phaser.Game({
     antialias: true,
     powerPreference: 'high-performance',
   },
-  scene: [BootScene, MenuScene, StageScene],
+  scene: [BootScene, MenuScene, StageScene, HudScene, ResultsScene],
 });
 
 window.__lastz = { game };
