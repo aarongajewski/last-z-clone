@@ -147,13 +147,27 @@ try {
 
   // A fresh save gets the tutorial: the first card pauses the stage until it is dismissed.
   const hasCard = () => page.evaluate(() => Boolean(window.__lastz.game.scene.getScene('Hud')?.children.getByName('tutorial')));
+  const tutorialState = () =>
+    page.evaluate(() => {
+      const s = window.__lastz.game.scene.getScene('Stage');
+      return { active: s.tutorial.active, enabled: s.tutorial.enabled, done: window.__lastz.save.get().settings.tutorialDone };
+    });
+  // Cards animate in over ~200 ms; tap once they have settled and retry if the tap was swallowed.
+  const tapCardButton = async (name, until) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.waitForTimeout(250);
+      await tapNamed('Hud', name).catch((err) => console.log(`tap ${name}: ${String(err).split('\n')[0]}`));
+      await page.waitForTimeout(250);
+      if (until(await tutorialState())) return true;
+    }
+    return false;
+  };
   await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').tutorial.active !== null, null, { timeout: 5_000 }).catch(() => {});
-  const firstCard = await page.evaluate(() => window.__lastz.game.scene.getScene('Stage').tutorial.active);
+  const firstCard = (await tutorialState()).active;
   check('tutorial card opens on stage 1', firstCard === 'steer' && (await hasCard()), `card ${firstCard}`);
   await page.screenshot({ path: join(outDir, 'tutorial.png') });
-  await tapNamed('Hud', 'tutorialNext');
-  await page.waitForTimeout(200);
-  check('GOT IT closes the card and resumes', !(await hasCard()) && (await page.evaluate(() => window.__lastz.game.scene.getScene('Stage').tutorial.active === null)));
+  const closed = await tapCardButton('tutorialNext', (t) => t.active === null);
+  check('GOT IT closes the card and resumes', closed && !(await hasCard()));
 
   const squadX = () => page.evaluate(() => window.__lastz.game.scene.getScene('Stage').squad.x);
   const client = await context.newCDPSession(page);
@@ -211,15 +225,10 @@ try {
   await page
     .waitForFunction(() => window.__lastz.game.scene.getScene('Stage').tutorial.active === 'gates', null, { timeout: 12_000 })
     .catch(() => {});
-  const gatesCard = await page.evaluate(() => window.__lastz.game.scene.getScene('Stage').tutorial.active);
+  const gatesCard = (await tutorialState()).active;
   check('gates tutorial card opens when gates appear', gatesCard === 'gates', `card ${gatesCard}`);
-  await tapNamed('Hud', 'tutorialSkip');
-  await page.waitForTimeout(200);
-  const afterSkip = await page.evaluate(() => ({
-    enabled: window.__lastz.game.scene.getScene('Stage').tutorial.enabled,
-    done: window.__lastz.save.get().settings.tutorialDone,
-  }));
-  check('SKIP ALL disables the tutorial and saves it as done', !afterSkip.enabled && afterSkip.done, JSON.stringify(afterSkip));
+  const skipped = await tapCardButton('tutorialSkip', (t) => !t.enabled && t.done);
+  check('SKIP ALL disables the tutorial and saves it as done', skipped, JSON.stringify(await tutorialState()));
 
   // Stage 1 spawns its first gate row at 4 s; wait for it so the screenshot shows gates.
   await page
