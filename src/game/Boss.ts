@@ -2,9 +2,10 @@ import Phaser from 'phaser';
 import { BOSS, ENEMIES, type EnemyDef } from '../data/enemies';
 import { TEXTURES } from './textures';
 
-const HIT_FLASH_MS = 50;
+const HIT_FLASH_MS = 60;
 /** Under sustained fire, flash at most this often so the boss stays readable. */
 const HIT_FLASH_GAP_MS = 220;
+const HIT_FLASH_ALPHA = 0.45;
 
 export interface BossHandlers {
   /** Fire an acid glob from (x, y). */
@@ -26,6 +27,8 @@ export class Boss extends Phaser.Physics.Arcade.Image {
   private summonTimer = 0;
   private flashUntil = 0;
   private handlers: BossHandlers | null = null;
+  /** Translucent white copy shown briefly on hits, so the boss art stays visible underneath. */
+  private readonly flash: Phaser.GameObjects.Image;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y, TEXTURES.boss);
@@ -33,18 +36,18 @@ export class Boss extends Phaser.Physics.Arcade.Image {
     scene.physics.add.existing(this);
     this.setDepth(4).setScale(this.def.scale).setTint(this.def.tint);
     this.body?.setCircle(60, 20, 30);
+    this.flash = scene.add.image(x, y, TEXTURES.boss).setScale(this.def.scale).setTintFill(0xffffff).setAlpha(0).setDepth(5);
     this.disableBody(true, true);
   }
 
-  spawn(x: number, y: number, handlers: BossHandlers): void {
+  spawn(x: number, y: number, hpMultiplier: number, handlers: BossHandlers): void {
     this.handlers = handlers;
-    this.hp = this.def.hp;
-    this.maxHp = this.def.hp;
+    this.maxHp = Math.ceil(this.def.hp * hpMultiplier);
+    this.hp = this.maxHp;
     this.phase = 'enter';
     this.spitTimer = BOSS.spitIntervalMs * 0.75;
     this.summonTimer = BOSS.summonIntervalMs * 0.5;
     this.enableBody(true, x, y, true, true);
-    this.setTint(this.def.tint);
     this.setVelocity(0, this.def.speed);
   }
 
@@ -58,7 +61,7 @@ export class Boss extends Phaser.Physics.Arcade.Image {
       return true;
     }
     if (now >= this.flashUntil + HIT_FLASH_GAP_MS) {
-      this.setTintFill(0xffffff);
+      this.flash.setAlpha(HIT_FLASH_ALPHA);
       this.flashUntil = now + HIT_FLASH_MS;
     }
     return false;
@@ -71,11 +74,13 @@ export class Boss extends Phaser.Physics.Arcade.Image {
 
   despawn(): void {
     this.disableBody(true, true);
+    this.flash.setAlpha(0);
   }
 
   /** Called from the scene each frame while active. */
   tick(time: number, delta: number): void {
-    if (this.tintFill && time >= this.flashUntil) this.setTint(this.def.tint);
+    this.flash.setPosition(this.x, this.y);
+    if (this.flash.alpha > 0 && time >= this.flashUntil) this.flash.setAlpha(0);
 
     if (this.phase === 'enter') {
       if (this.y >= BOSS.holdY) {
