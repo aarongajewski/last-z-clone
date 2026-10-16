@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Post-deploy smoke check at an iPhone viewport (393x852, DPR 3, touch).
 // Usage: node scripts/smoke-check.mjs <url> [out-dir]
-// Checks: page loads, title screen renders, a tap advances to the stage,
-// the squad follows a horizontal drag, auto-fire scores kills. Writes
-// title.png, stage.png, and results.json into out-dir; exits 1 on any failure.
+// Walks Title -> Shelter -> Stage Select -> Stage, then checks the stage plays:
+// a tap advances, the squad follows a horizontal drag, auto-fire scores kills,
+// gates scroll in. Writes title.png, shelter.png, stage-select.png, stage.png,
+// and results.json into out-dir; exits 1 on any failure.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, devices } from 'playwright';
@@ -16,6 +17,7 @@ if (!url) {
 const outDir = outDirArg ?? 'smoke';
 mkdirSync(outDir, { recursive: true });
 
+const DESIGN_WIDTH = 540;
 const results = [];
 const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
@@ -44,27 +46,87 @@ page.on('console', (m) => {
   if (m.type() === 'error') errors.push(m.text());
 });
 
+const activeScenes = () => page.evaluate(() => window.__lastz?.game?.scene.getScenes(true).map((s) => s.scene.key) ?? []);
+const waitForScene = (key, timeout = 15_000) =>
+  page.waitForFunction((k) => window.__lastz?.game?.scene.isActive(k) === true, key, { timeout });
+
 try {
   const response = await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
   check('page loads with 200', response?.status() === 200, `status ${response?.status()}`);
 
-  const activeScenes = () =>
-    page.evaluate(() => window.__lastz?.game?.scene.getScenes(true).map((s) => s.scene.key) ?? []);
-
-  await page.waitForFunction(() => window.__lastz?.game?.scene.isActive('Menu') === true, null, { timeout: 20_000 });
+  await waitForScene('Menu', 20_000);
   check('title screen (Menu scene) renders', (await activeScenes()).includes('Menu'));
 
   const box = await page.locator('canvas').boundingBox();
   check('canvas fills the viewport', Boolean(box && box.width > 300 && box.height > 600), JSON.stringify(box));
+  const scale = box.width / DESIGN_WIDTH;
+  const tapDesign = (x, y) => page.touchscreen.tap(x * scale, y * scale);
+  // Taps a named game object (searching inside containers) at its world position.
+  const tapNamed = async (sceneKey, name) => {
+    const pos = await page.evaluate(
+      ([k, n]) => {
+        const scene = window.__lastz.game.scene.getScene(k);
+        const find = (list) => {
+          for (const obj of list) {
+            if (obj.name === n) return obj;
+            if (obj.list) {
+              const inner = find(obj.list);
+              if (inner) return inner;
+            }
+          }
+          return null;
+        };
+        const obj = find(scene.children.list);
+        if (!obj) return null;
+        const m = obj.getWorldTransformMatrix();
+        return { x: m.tx, y: m.ty };
+      },
+      [sceneKey, name],
+    );
+    if (!pos) throw new Error(`no game object named ${name} in ${sceneKey}`);
+    await tapDesign(pos.x, pos.y);
+  };
 
   const renderer = await page.evaluate(() => (window.__lastz?.game?.renderer.type === 2 ? 'webgl' : 'canvas'));
   console.log(`renderer: ${renderer}`);
   await page.screenshot({ path: join(outDir, 'title.png') });
 
-  await page.touchscreen.tap(196, 500);
-  await page.waitForFunction(() => window.__lastz?.game?.scene.isActive('Stage') === true, null, { timeout: 10_000 });
-  check('tap advances to Stage scene', (await activeScenes()).includes('Stage'));
+  // Title -> Shelter
+  await tapDesign(270, 600);
+  await waitForScene('Shelter');
+  check('tap on the title opens the Shelter', (await activeScenes()).includes('Shelter'));
+  await page.waitForTimeout(300);
+  const shelter = await page.evaluate(() => {
+    const save = window.__lastz.save.get();
+    return { food: save.resources.food, steel: save.resources.steel, hq: save.buildings.hq, build: save.build };
+  });
+  check('shelter shows a fresh save', shelter.hq >= 1 && shelter.food >= 0 && shelter.steel >= 0, JSON.stringify(shelter));
+  await page.screenshot({ path: join(outDir, 'shelter.png') });
+
+  // Shelter -> Stage Select
+  await tapNamed('Shelter', 'toStages');
+  await waitForScene('StageSelect');
+  check('TO STAGES opens Stage Select', (await activeScenes()).includes('StageSelect'));
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(outDir, 'stage-select.png') });
+
+  // Stage Select -> Stage 1. Tapping the already-selected cell starts it; otherwise PLAY does.
+  await tapNamed('StageSelect', 'stage-1');
+  const startedFromCell = await waitForScene('Stage', 2_000).then(
+    () => true,
+    (err) => {
+      console.log(`cell tap did not start the stage: ${String(err).split('\n')[0]}`);
+      return false;
+    },
+  );
+  if (!startedFromCell) {
+    await tapNamed('StageSelect', 'play');
+    await waitForScene('Stage');
+  }
+  check('PLAY starts the Stage scene', (await activeScenes()).includes('Stage'));
   check('HUD overlay is running', (await activeScenes()).includes('Hud'));
+  const stageNumber = await page.evaluate(() => window.__lastz.game.scene.getScene('Stage').stage.number);
+  check('stage 1 is playing', stageNumber === 1, `stage ${stageNumber}`);
 
   const squadX = () => page.evaluate(() => window.__lastz.game.scene.getScene('Stage').squad.x);
   const client = await context.newCDPSession(page);
@@ -100,14 +162,22 @@ try {
         progress: hud.progress,
         gatesOnScreen: s.gates.getChildren().filter((g) => g.active).length,
         elapsed: s.elapsed,
+        hero: s.hero.id,
+        skillCooldownMs: hud.skill.cooldownRemainingMs,
       };
     });
 
   await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').kills > 0, null, { timeout: 8_000 }).catch(() => {});
   let stats = await readStage();
   check('auto-fire kills zombies', stats.kills > 0, JSON.stringify(stats));
-  check('squad starts with 3 soldiers', stats.soldiers === 3, `soldiers ${stats.soldiers}`);
+  check('squad starts with the Barracks headcount', stats.soldiers >= 3, `soldiers ${stats.soldiers}`);
   check('stage progress bar is advancing', stats.progress > 0 && stats.progress < 1, `progress ${stats.progress.toFixed(3)}`);
+
+  // Hero skill button fires once and goes on cooldown.
+  await tapNamed('Hud', 'skill');
+  await page.waitForTimeout(200);
+  stats = await readStage();
+  check('hero skill button fires and starts its cooldown', stats.skillCooldownMs > 0, `${stats.hero} cooldown ${Math.round(stats.skillCooldownMs)} ms`);
 
   // Stage 1 spawns its first gate row at 4 s; wait for it so the screenshot shows gates.
   await page
