@@ -176,7 +176,7 @@ export class ShelterScene extends Phaser.Scene {
   private effectLine(id: BuildingId, level: number): string {
     switch (id) {
       case 'hq':
-        return `Caps other buildings at Lv ${level}`;
+        return `Caps others at Lv ${level}`;
       case 'farm':
         return `${BUILDING_EFFECTS.farm(level)} food / min`;
       case 'mill':
