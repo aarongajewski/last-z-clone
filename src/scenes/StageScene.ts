@@ -346,7 +346,7 @@ export class StageScene extends Phaser.Scene {
     }
     for (const child of this.barriers.getChildren()) {
       const barrier = child as Barrier;
-      if (barrier.active && barrier.y > 250) {
+      if (barrier.active && barrier.y > 110) {
         this.showTutorialStep('barriers');
         break;
       }
