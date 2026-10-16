@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import pkg from './package.json';
 
 // GitHub Pages serves the project site from this sub-path.
 const BASE = '/last-z-clone/';
@@ -7,6 +8,9 @@ const THEME = '#0b0f14';
 
 export default defineConfig({
   base: BASE,
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   build: {
     target: 'es2022',
     sourcemap: false,
@@ -16,7 +20,8 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      // src/pwa.ts registers the worker itself so it can control update checks and reloads.
+      injectRegister: false,
       manifest: {
         id: BASE,
         name: 'Last Z Clone',
