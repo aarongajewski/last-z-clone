@@ -30,6 +30,13 @@ Pushing to `main` runs `.github/workflows/pages.yml`, which typechecks, tests, b
 deploys `dist/` to GitHub Pages, then smoke-tests the live URL at an iPhone viewport and
 uploads the screenshots as the `iphone-smoke` artifact.
 
+## How to play
+
+Drag left or right to steer the squad; it fires on its own. Steer through green gates
+(`+N TROOPS`, `x2 FIRE`) and away from red ones (`-N TROOPS`, `x0.5 FIRE`). Barriers
+show their HP and must be shot down or they cost soldiers. Zombies that reach the squad
+kill soldiers; at zero soldiers the stage is lost. Survive the waves and kill the boss.
+
 ## Layout
 
 ```
@@ -37,9 +44,16 @@ index.html                 iPhone meta tags, no-scroll / no-zoom CSS, rotate ove
 vite.config.ts             base '/last-z-clone/', PWA manifest + service worker
 src/main.ts                Phaser.Game config
 src/config.ts              design resolution, palette, scene keys
-src/scenes/                Boot, Menu, Stage
-src/game/                  gameplay modules (pure logic stays Phaser-free for tests)
+src/data/                  stage timeline, enemy types, squad tuning (balance lives here)
+src/scenes/                Boot, Menu, Stage, Hud (overlay), Results
+src/game/                  Squad, Enemy, Bullet, Gate, Barrier, Boss, Projectile + pure logic
+                           (gateMath, waveSchedule, formation, squadMath are Phaser-free)
 src/ui/TouchInput.ts       drag steering + iOS touch guards
+scripts/                   icon generator, Playwright smoke check
 public/icons/              generated icon set
 tests/                     Vitest suites
 ```
+
+Stage 1 is defined in `src/data/stages.ts` as a list of timed events (waves, gates,
+barriers, boss). `validateStage` in `src/game/waveSchedule.ts` checks a stage definition
+and the test suite runs it over every shipped stage.

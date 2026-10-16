@@ -64,6 +64,7 @@ try {
   await page.touchscreen.tap(196, 500);
   await page.waitForFunction(() => window.__lastz?.game?.scene.isActive('Stage') === true, null, { timeout: 10_000 });
   check('tap advances to Stage scene', (await activeScenes()).includes('Stage'));
+  check('HUD overlay is running', (await activeScenes()).includes('Hud'));
 
   const squadX = () => page.evaluate(() => window.__lastz.game.scene.getScene('Stage').squad.x);
   const client = await context.newCDPSession(page);
@@ -87,12 +88,37 @@ try {
   const leftX = await drag(300, 100, 20);
   check('squad follows drag left', leftX < rightX - 60, `x ${rightX.toFixed(1)} -> ${leftX.toFixed(1)}`);
 
-  await page.waitForTimeout(2500);
-  const stats = await page.evaluate(() => {
-    const s = window.__lastz.game.scene.getScene('Stage');
-    return { kills: s.kills, leaked: s.leaked };
-  });
+  const readStage = () =>
+    page.evaluate(() => {
+      const s = window.__lastz.game.scene.getScene('Stage');
+      const hud = s.hudState();
+      return {
+        kills: s.kills,
+        leaked: s.leaked,
+        soldiers: s.squad.stats.soldiers,
+        fireRate: s.squad.stats.fireRate,
+        progress: hud.progress,
+        gatesOnScreen: s.gates.getChildren().filter((g) => g.active).length,
+        elapsed: s.elapsed,
+      };
+    });
+
+  await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').kills > 0, null, { timeout: 8_000 }).catch(() => {});
+  let stats = await readStage();
   check('auto-fire kills zombies', stats.kills > 0, JSON.stringify(stats));
+  check('squad starts with 3 soldiers', stats.soldiers === 3, `soldiers ${stats.soldiers}`);
+  check('stage progress bar is advancing', stats.progress > 0 && stats.progress < 1, `progress ${stats.progress.toFixed(3)}`);
+
+  // Stage 1 spawns its first gate row at 4 s; wait for it so the screenshot shows gates.
+  await page
+    .waitForFunction(
+      () => window.__lastz.game.scene.getScene('Stage').gates.getChildren().some((g) => g.active && g.y > 150),
+      null,
+      { timeout: 10_000 },
+    )
+    .catch(() => {});
+  stats = await readStage();
+  check('gates scroll in from the top', stats.gatesOnScreen > 0, `gates ${stats.gatesOnScreen} at ${stats.elapsed.toFixed(1)}s`);
   await page.screenshot({ path: join(outDir, 'stage.png') });
 
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
