@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SQUAD } from '../src/data/squad';
 import {
   applyGateEffect,
   fireIntervalMs,
@@ -45,7 +46,7 @@ describe('applyGateEffect', () => {
 
   it('uses the configured default limits when none are given', () => {
     expect(applyGateEffect({ soldiers: 1, fireRate: 1 }, { kind: 'troops', amount: -5 }).soldiers).toBe(1);
-    expect(applyGateEffect({ soldiers: 1, fireRate: 1 }, { kind: 'troops', amount: 500 }).soldiers).toBe(12);
+    expect(applyGateEffect({ soldiers: 1, fireRate: 1 }, { kind: 'troops', amount: 500 }).soldiers).toBe(SQUAD.maxSoldiers);
   });
 });
 

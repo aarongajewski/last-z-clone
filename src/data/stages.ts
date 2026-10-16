@@ -41,28 +41,42 @@ export interface BossEvent {
 
 export type StageEvent = WaveEvent | GateEvent | BarrierEvent | BossEvent;
 
+export interface StageScaling {
+  /** Multiplies every zombie's HP. */
+  hp: number;
+  /** Multiplies every zombie's speed. */
+  speed: number;
+  /** Multiplies the boss's HP. */
+  bossHp: number;
+}
+
 export interface StageDef {
   id: string;
+  /** 1-based stage number. */
+  number: number;
   name: string;
   /** Scroll speed of the road, gates, and barriers in px/s. */
   roadSpeed: number;
-  startingSoldiers: number;
   /** Seconds until the boss walks in; the progress bar fills over this time. */
   bossAt: number;
   /** Soldiers lost when a barrier reaches the squad. */
   barrierDamage: number;
+  scaling: StageScaling;
   events: StageEvent[];
 }
+
+export const STAGE_COUNT = 20;
 
 // Spawn times are when things appear at the top; gates and barriers reach the
 // squad about 6.5 s later at roadSpeed 150.
 export const STAGE_1: StageDef = {
   id: 'stage-1',
+  number: 1,
   name: 'STAGE 1',
   roadSpeed: 150,
-  startingSoldiers: 3,
   bossAt: 60,
   barrierDamage: 2,
+  scaling: { hp: 1, speed: 1, bossHp: 1 },
   events: [
     { type: 'wave', at: 0.8, enemy: 'walker', count: 3, interval: 0.5, spread: 'center' },
     { type: 'gate', at: 4, left: { kind: 'troops', amount: 3 }, right: { kind: 'fireRate', multiplier: 2 } },
@@ -91,4 +105,137 @@ export const STAGE_1: StageDef = {
   ],
 };
 
-export const STAGES: readonly StageDef[] = [STAGE_1];
+// ---- Stages 2..20 -------------------------------------------------------------
+//
+// Later stages are generated from this curve. Counts, HP, and timing come straight
+// from the row (so difficulty rises monotonically); the seeded RNG only picks
+// lanes, gate sides, and barrier shapes for variety.
+
+export interface CurveRow {
+  bossAt: number;
+  hp: number;
+  speed: number;
+  bossHp: number;
+  /** Multiplies zombies per wave and wave frequency. */
+  density: number;
+  /** Every Nth wave is brutes. */
+  brutesEvery: number;
+  barrierHp: number;
+  /** Troops added by a green gate. */
+  greenTroops: number;
+  /** Troops removed by a red gate. */
+  redTroops: number;
+}
+
+export function curveRow(n: number): CurveRow {
+  const k = n - 1;
+  return {
+    bossAt: 60 + k * 2,
+    hp: 1 + 0.4 * k,
+    speed: 1 + 0.015 * k,
+    bossHp: 1 + 0.4 * k,
+    density: 1 + 0.04 * k,
+    brutesEvery: Math.max(3, 6 - Math.floor(k / 4)),
+    barrierHp: 25 + 10 * k,
+    greenTroops: 2 + Math.floor(k / 5),
+    redTroops: 2 + Math.floor(k / 7),
+  };
+}
+
+const SPREADS: readonly WaveSpread[] = ['line', 'spread', 'left', 'right', 'center'];
+
+/** Small deterministic PRNG so a stage looks the same every time it is played. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const round1 = (v: number) => Math.round(v * 10) / 10;
+
+export function makeStage(n: number): StageDef {
+  const row = curveRow(n);
+  const rng = mulberry32(n * 7919 + 17);
+  const pick = <T>(items: readonly T[]): T => items[Math.floor(rng() * items.length)] as T;
+  const events: StageEvent[] = [];
+
+  // Waves: walkers by default, runners every third wave, brutes every brutesEvery-th.
+  const waveGap = 3.4 / Math.sqrt(row.density);
+  let t = 1;
+  for (let i = 0; t < row.bossAt - 5; i++) {
+    const kind: EnemyKind = (i + 1) % row.brutesEvery === 0 ? 'brute' : i % 3 === 1 ? 'runner' : 'walker';
+    const count =
+      kind === 'brute'
+        ? Math.max(1, Math.round(1 + n * 0.12))
+        : Math.max(2, Math.round((4 + n * 0.2) * row.density * (kind === 'runner' ? 0.8 : 1)));
+    const interval = kind === 'brute' ? 1 : kind === 'runner' ? 0.3 : 0.45;
+    if (t + (count - 1) * interval > row.bossAt - 1) break;
+    events.push({ type: 'wave', at: round1(t), enemy: kind, count, interval, spread: pick(SPREADS) });
+    t += waveGap;
+  }
+
+  // Gate rows every 8 s. Most rows are a green/red choice; some are two greens;
+  // some pair a single green with a barrier blocking the other half.
+  for (let g = 4; g < row.bossAt - 8; g += 8) {
+    const greens: GateEffect[] = [
+      { kind: 'troops', amount: row.greenTroops },
+      { kind: 'troops', amount: row.greenTroops + 1 },
+      { kind: 'fireRate', multiplier: 2 },
+    ];
+    const reds: GateEffect[] = [
+      { kind: 'troops', amount: -row.redTroops },
+      { kind: 'fireRate', multiplier: 0.5 },
+    ];
+    const roll = rng();
+    const greenSide: GateSide = rng() < 0.5 ? 'left' : 'right';
+    const otherSide: GateSide = greenSide === 'left' ? 'right' : 'left';
+    if (roll < 0.55) {
+      events.push({ type: 'gate', at: g, [greenSide]: pick(greens), [otherSide]: pick(reds) });
+    } else if (roll < 0.8) {
+      events.push({
+        type: 'gate',
+        at: g,
+        left: { kind: 'troops', amount: row.greenTroops },
+        right: { kind: 'fireRate', multiplier: 2 },
+      });
+    } else {
+      events.push({ type: 'gate', at: g, [greenSide]: pick(greens) });
+      events.push({ type: 'barrier', at: g, side: otherSide, hp: Math.round(row.barrierHp * 0.8) });
+    }
+  }
+
+  // Standalone barriers every 13 s; full-width walls get more common later.
+  for (let b = 11; b < row.bossAt - 8; b += 13) {
+    const full = rng() < 0.2 + n * 0.02;
+    const side: BarrierSide = full ? 'full' : pick(['left', 'right'] as const);
+    events.push({ type: 'barrier', at: b, side, hp: Math.round(row.barrierHp * (full ? 1 : 1.2)) });
+  }
+
+  events.push({ type: 'boss', at: row.bossAt });
+  events.sort((a, b) => a.at - b.at);
+
+  return {
+    id: `stage-${n}`,
+    number: n,
+    name: `STAGE ${n}`,
+    roadSpeed: 150,
+    bossAt: row.bossAt,
+    barrierDamage: 2,
+    scaling: { hp: row.hp, speed: row.speed, bossHp: row.bossHp },
+    events,
+  };
+}
+
+export const STAGES: readonly StageDef[] = [
+  STAGE_1,
+  ...Array.from({ length: STAGE_COUNT - 1 }, (_, i) => makeStage(i + 2)),
+];
+
+export function getStage(n: number): StageDef {
+  return STAGES[Math.min(Math.max(1, Math.round(n)), STAGE_COUNT) - 1] ?? STAGE_1;
+}

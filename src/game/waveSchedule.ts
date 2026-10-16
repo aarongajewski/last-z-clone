@@ -82,6 +82,15 @@ export class Timeline {
   }
 }
 
+/** Sum of zombie HP a stage throws at the player (boss excluded); a difficulty proxy. */
+export function totalEnemyHp(stage: StageDef, baseHp: Record<EnemyKind, number>): number {
+  let total = 0;
+  for (const event of stage.events) {
+    if (event.type === 'wave') total += event.count * baseHp[event.enemy] * stage.scaling.hp;
+  }
+  return total;
+}
+
 /** 0..1 progress towards the boss. */
 export function stageProgress(elapsedSeconds: number, bossAt: number): number {
   if (bossAt <= 0) return 1;
@@ -93,8 +102,11 @@ export function validateStage(stage: StageDef): string[] {
   const problems: string[] = [];
   if (!(stage.bossAt > 0)) problems.push('bossAt must be positive');
   if (!(stage.roadSpeed > 0)) problems.push('roadSpeed must be positive');
-  if (!(stage.startingSoldiers >= 1)) problems.push('startingSoldiers must be at least 1');
   if (!(stage.barrierDamage >= 0)) problems.push('barrierDamage must not be negative');
+  if (!(stage.number >= 1)) problems.push('number must be at least 1');
+  for (const [key, value] of Object.entries(stage.scaling)) {
+    if (!(value > 0)) problems.push(`scaling.${key} must be positive`);
+  }
 
   const bosses = stage.events.filter((e) => e.type === 'boss');
   if (bosses.length !== 1) problems.push(`expected exactly one boss event, found ${bosses.length}`);

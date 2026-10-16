@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { STAGE_1, STAGES, type StageDef, type WaveEvent } from '../src/data/stages';
+import { ENEMIES } from '../src/data/enemies';
+import { STAGE_1, STAGES, STAGE_COUNT, getStage, makeStage, type StageDef, type WaveEvent } from '../src/data/stages';
 import {
   LANES,
   Timeline,
   buildSchedule,
   expandWave,
   stageProgress,
+  totalEnemyHp,
   validateStage,
   type SpawnEvent,
 } from '../src/game/waveSchedule';
+
+const BASE_HP = { walker: ENEMIES.walker.hp, runner: ENEMIES.runner.hp, brute: ENEMIES.brute.hp, boss: ENEMIES.boss.hp };
 
 const wave = (overrides: Partial<WaveEvent> = {}): WaveEvent => ({
   type: 'wave',
@@ -55,11 +59,12 @@ describe('expandWave', () => {
 describe('buildSchedule', () => {
   const stage: StageDef = {
     id: 't',
+    number: 99,
     name: 'T',
     roadSpeed: 150,
-    startingSoldiers: 3,
     bossAt: 20,
     barrierDamage: 2,
+    scaling: { hp: 1, speed: 1, bossHp: 1 },
     events: [
       { type: 'gate', at: 5, left: { kind: 'troops', amount: 2 } },
       { type: 'wave', at: 1, enemy: 'walker', count: 3, interval: 1 },
@@ -122,9 +127,50 @@ describe('stageProgress', () => {
 });
 
 describe('stage data', () => {
-  it('every shipped stage is valid', () => {
-    for (const stage of STAGES) {
+  it('ships 20 stages numbered in order, all valid', () => {
+    expect(STAGES).toHaveLength(STAGE_COUNT);
+    STAGES.forEach((stage, i) => {
+      expect(stage.number).toBe(i + 1);
       expect(validateStage(stage), stage.id).toEqual([]);
+    });
+    expect(getStage(1)).toBe(STAGE_1);
+    expect(getStage(20).number).toBe(20);
+    expect(getStage(0)).toBe(STAGE_1);
+    expect(getStage(99).number).toBe(20);
+  });
+
+  it('stage 1 is the hand-authored stage, untouched by the generator', () => {
+    expect(STAGES[0]).toBe(STAGE_1);
+    expect(STAGE_1.scaling).toEqual({ hp: 1, speed: 1, bossHp: 1 });
+    expect(STAGE_1.events).toHaveLength(24);
+  });
+
+  it('later stages are harder: more total zombie HP, tougher bosses, longer runs', () => {
+    for (let n = 2; n <= STAGE_COUNT; n++) {
+      const prev = getStage(n - 1);
+      const stage = getStage(n);
+      expect(totalEnemyHp(stage, BASE_HP), `stage ${n}`).toBeGreaterThan(totalEnemyHp(prev, BASE_HP));
+      expect(stage.scaling.bossHp).toBeGreaterThan(prev.scaling.bossHp);
+      expect(stage.bossAt).toBeGreaterThanOrEqual(prev.bossAt);
+    }
+    expect(totalEnemyHp(getStage(20), BASE_HP)).toBeGreaterThan(totalEnemyHp(STAGE_1, BASE_HP) * 8);
+  });
+
+  it('difficulty comes from tougher zombies, not an unplayable flood', () => {
+    for (const stage of STAGES) {
+      const zombies = stage.events.filter((e) => e.type === 'wave').reduce((sum, w) => sum + w.count, 0);
+      expect(zombies / stage.bossAt, stage.id).toBeLessThan(5);
+    }
+  });
+
+  it('generated stages are deterministic and keep every mechanic in play', () => {
+    expect(makeStage(7)).toEqual(makeStage(7));
+    for (let n = 2; n <= STAGE_COUNT; n++) {
+      const stage = getStage(n);
+      const types = new Set(stage.events.map((e) => e.type));
+      expect(types, `stage ${n}`).toEqual(new Set(['wave', 'gate', 'barrier', 'boss']));
+      const kinds = new Set(stage.events.filter((e) => e.type === 'wave').map((e) => e.enemy));
+      expect(kinds, `stage ${n}`).toEqual(new Set(['walker', 'runner', 'brute']));
     }
   });
 
@@ -147,11 +193,12 @@ describe('stage data', () => {
   it('reports what is wrong with a broken stage', () => {
     const broken: StageDef = {
       id: 'broken',
+      number: 0,
       name: 'Broken',
       roadSpeed: 150,
-      startingSoldiers: 0,
       bossAt: 10,
       barrierDamage: 2,
+      scaling: { hp: 0, speed: 1, bossHp: 1 },
       events: [
         { type: 'wave', at: 9, enemy: 'walker', count: 5, interval: 1 },
         { type: 'gate', at: 3 },
@@ -164,7 +211,8 @@ describe('stage data', () => {
     const problems = validateStage(broken);
     expect(problems).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('startingSoldiers'),
+        expect.stringContaining('number must be'),
+        expect.stringContaining('scaling.hp'),
         expect.stringContaining('exactly one boss'),
         expect.stringContaining('does not match bossAt'),
         expect.stringContaining('last zombie spawns after the boss'),

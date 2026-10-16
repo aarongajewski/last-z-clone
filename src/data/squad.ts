@@ -1,10 +1,11 @@
 export const SQUAD = {
   startingSoldiers: 3,
-  maxSoldiers: 12,
+  /** Barracks can start a stage at 12; gates add on top of that. */
+  maxSoldiers: 20,
   /** Red gates can shrink the squad but never wipe it; only zombie hits do that. */
   minSoldiersAfterGate: 1,
   minFireRate: 0.5,
-  maxFireRate: 4,
+  maxFireRate: 6,
   /** Time between shots for one soldier at fire rate x1. */
   baseFireIntervalMs: 380,
   /** Whole-squad floor, whatever the multiplier and headcount. */
