@@ -16,6 +16,12 @@ export interface LoadoutLevels {
   lab: number;
 }
 
+// Bot outcome at these levels (M3 balance pass, final curve; soldiers left / soldiers lost):
+//  1 won 3-8/0-1    2 won 13/0    3 won 15/0    4 won 14/0    5 won 19/0
+//  6 won 9/1        7 won 13/0    8 won 11/1    9 won 20/0   10 won 19/1
+// 11 won 15/5      12 won 17-20/0 13 won 18/2   14 won 20/0  15 won 20/0
+// 16 won 20/0      17 won 20/0   18 won 5-20/3-13 19 won 17/3 20 won 20/3 (also one loss before brutes were eased)
+// Stage 8 at a fresh shelter (1/1/1/1) is lost at 19 s, so later stages are not trivial at base.
 // stage:   1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
 const HQ = [1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 9, 10, 10];
 const BARRACKS = [1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10];
