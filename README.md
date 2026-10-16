@@ -23,10 +23,12 @@ npm run typecheck  # tsc --noEmit
 npm test           # Vitest
 npm run build      # production build into dist/
 npm run icons      # regenerate public/icons from scripts/make-icons.mjs
+npm run smoke -- <url> [out-dir]   # Playwright smoke check at an iPhone viewport
 ```
 
 Pushing to `main` runs `.github/workflows/pages.yml`, which typechecks, tests, builds, and
-deploys `dist/` to GitHub Pages.
+deploys `dist/` to GitHub Pages, then smoke-tests the live URL at an iPhone viewport and
+uploads the screenshots as the `iphone-smoke` artifact.
 
 ## Layout
 
