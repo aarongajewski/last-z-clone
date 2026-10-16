@@ -13,6 +13,10 @@ export const TEXTURES = {
   barrierFull: 'barrierFull',
   road: 'road',
   spark: 'spark',
+  shield: 'shield',
+  heroSarge: 'heroSarge',
+  heroDoc: 'heroDoc',
+  heroBlaze: 'heroBlaze',
 } as const;
 
 export const ROAD_TILE_HEIGHT = 240;
@@ -134,6 +138,43 @@ export function generatePlaceholderTextures(scene: Phaser.Scene): void {
   g.fillStyle(0xffffff, 1);
   g.fillCircle(6, 6, 6);
   g.generateTexture(TEXTURES.spark, 12, 12);
+
+  // Buff bubble around the squad; white so each hero tints it.
+  g.clear();
+  g.fillStyle(0xffffff, 0.22);
+  g.fillCircle(130, 130, 128);
+  g.lineStyle(6, 0xffffff, 0.9);
+  g.strokeCircle(130, 130, 125);
+  g.generateTexture(TEXTURES.shield, 260, 260);
+
+  // Hero skill icons: airstrike (falling bombs), shield (badge), rapid fire (three tracers).
+  g.clear();
+  g.fillStyle(0xffffff, 1);
+  for (const x of [20, 40, 60]) {
+    g.fillRect(x - 5, 14, 10, 26);
+    g.fillTriangle(x - 9, 40, x + 9, 40, x, 56);
+  }
+  g.generateTexture(TEXTURES.heroSarge, 80, 72);
+
+  g.clear();
+  g.fillStyle(0xffffff, 1);
+  g.fillRoundedRect(16, 8, 48, 40, 10);
+  g.fillTriangle(16, 40, 64, 40, 40, 66);
+  g.fillStyle(0x4cc9f0, 1);
+  g.fillRoundedRect(26, 18, 28, 22, 6);
+  g.fillTriangle(26, 36, 54, 36, 40, 52);
+  g.generateTexture(TEXTURES.heroDoc, 80, 72);
+
+  g.clear();
+  g.fillStyle(0xffffff, 1);
+  for (const [x, y] of [
+    [20, 30],
+    [40, 12],
+    [60, 30],
+  ] as const) {
+    g.fillRoundedRect(x - 5, y, 10, 30, 5);
+  }
+  g.generateTexture(TEXTURES.heroBlaze, 80, 72);
 
   // Road tile that scrolls downward to sell forward motion.
   g.clear();

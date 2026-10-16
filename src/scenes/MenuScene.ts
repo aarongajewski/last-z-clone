@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
 import { TEXTURES } from '../game/textures';
+import { saveStore } from '../meta/saveStore';
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -39,8 +40,19 @@ export class MenuScene extends Phaser.Scene {
       [cx + 150, 540],
       [cx + 30, 500],
     ] as const) {
-      this.add.image(x, y, TEXTURES.zombie).setAlpha(0.9);
+      this.add.image(x, y, TEXTURES.zombie).setTint(COLORS.zombie).setAlpha(0.9);
     }
+
+    const save = saveStore.get();
+    const cleared = Object.values(save.stages).filter((r) => r.clears > 0).length;
+    this.add
+      .text(cx, 820, cleared > 0 ? `Stage ${save.highestUnlocked} unlocked  ·  ${cleared} cleared` : 'A new shelter awaits', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '22px',
+        fontStyle: '700',
+        color: '#8b949e',
+      })
+      .setOrigin(0.5);
 
     const prompt = this.add
       .text(cx, 900, 'TAP TO START', {
@@ -63,7 +75,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.input.once(Phaser.Input.Events.POINTER_DOWN, () => {
-      this.scene.start(SCENES.stage);
+      this.scene.start(SCENES.shelter);
     });
   }
 }

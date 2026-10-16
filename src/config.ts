@@ -32,6 +32,8 @@ export const COLORS = {
 export const SCENES = {
   boot: 'Boot',
   menu: 'Menu',
+  shelter: 'Shelter',
+  stageSelect: 'StageSelect',
   stage: 'Stage',
   hud: 'Hud',
   results: 'Results',

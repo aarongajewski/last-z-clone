@@ -16,6 +16,8 @@ export class TouchInput {
     initialX: number,
     private readonly gameWidth: number,
     private readonly margin: number,
+    /** Touches starting where this returns true (HUD buttons) never become drags. */
+    private readonly ignoreAt: (x: number, y: number) => boolean = () => false,
   ) {
     this.targetX = initialX;
     scene.input.on(Phaser.Input.Events.POINTER_DOWN, this.onDown, this);
@@ -30,7 +32,7 @@ export class TouchInput {
   }
 
   private onDown(pointer: Phaser.Input.Pointer): void {
-    if (this.activePointerId !== null) return;
+    if (this.activePointerId !== null || this.ignoreAt(pointer.x, pointer.y)) return;
     this.activePointerId = pointer.id;
     this.pointerStartX = pointer.x;
     this.squadStartX = this.targetX;

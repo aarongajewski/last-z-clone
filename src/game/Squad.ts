@@ -19,10 +19,10 @@ export class Squad {
   readonly soldiers: Phaser.Physics.Arcade.Group;
   private muzzleIndex = 0;
 
-  constructor(scene: Phaser.Scene, x: number, y: number, soldiers: number) {
+  constructor(scene: Phaser.Scene, x: number, y: number, soldiers: number, fireRate = 1) {
     this.x = x;
     this.y = y;
-    this.stats = { soldiers, fireRate: 1 };
+    this.stats = { soldiers, fireRate };
     this.soldiers = scene.physics.add.group({
       classType: Phaser.Physics.Arcade.Image,
       defaultKey: TEXTURES.soldier,

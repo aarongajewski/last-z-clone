@@ -10,18 +10,21 @@ const HIT_FLASH_GAP_MS = 120;
 export class Enemy extends Phaser.Physics.Arcade.Image {
   def: EnemyDef = ENEMIES.walker;
   hp = 0;
+  /** Actual downward speed after stage scaling. */
+  speed = 0;
   private flashUntil = 0;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y, TEXTURES.zombie);
   }
 
-  spawn(def: EnemyDef, x: number, y: number): void {
+  spawn(def: EnemyDef, x: number, y: number, hpMultiplier = 1, speedMultiplier = 1): void {
     this.def = def;
-    this.hp = def.hp;
+    this.hp = Math.ceil(def.hp * hpMultiplier);
+    this.speed = def.speed * speedMultiplier;
     this.enableBody(true, x, y, true, true);
     this.setScale(def.scale).setTint(def.tint).setDepth(4);
-    this.setVelocity(0, def.speed);
+    this.setVelocity(0, this.speed);
   }
 
   /** Applies damage; returns true when this hit killed it. */

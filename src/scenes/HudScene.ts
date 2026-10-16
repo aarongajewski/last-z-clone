@@ -1,7 +1,14 @@
 import Phaser from 'phaser';
 import { COLORS, FONT, GAME_WIDTH, SAFE_TOP, SCENES } from '../config';
+import type { HeroDef } from '../data/heroes';
 import { TEXTURES } from '../game/textures';
-import type { StageScene } from './StageScene';
+import { SKILL_BUTTON, type StageScene } from './StageScene';
+
+export interface SkillState {
+  hero: HeroDef;
+  cooldownRemainingMs: number;
+  activeRemainingMs: number;
+}
 
 export interface HudState {
   stageName: string;
@@ -11,6 +18,7 @@ export interface HudState {
   fireRate: number;
   kills: number;
   boss: { hp: number; maxHp: number } | null;
+  skill: SkillState;
 }
 
 const BAR_X = 70;
@@ -20,7 +28,9 @@ const BAR_HEIGHT = 16;
 const BOSS_BAR_Y = BAR_Y + 86;
 const BOSS_BAR_HEIGHT = 14;
 
-/** Overlay drawn above the stage: progress bar, headcount, kills, fire rate, boss health. */
+const SKILL_LABEL: Record<HeroDef['skill'], string> = { airstrike: 'STRIKE', shield: 'SHIELD', rapidFire: 'RAPID' };
+
+/** Overlay drawn above the stage: progress bar, headcount, kills, fire rate, boss health, hero skill button. */
 export class HudScene extends Phaser.Scene {
   private bars!: Phaser.GameObjects.Graphics;
   private soldiersText!: Phaser.GameObjects.Text;
@@ -28,6 +38,10 @@ export class HudScene extends Phaser.Scene {
   private fireRateText!: Phaser.GameObjects.Text;
   private bossText!: Phaser.GameObjects.Text;
   private bossMarker!: Phaser.GameObjects.Image;
+  private skillGfx!: Phaser.GameObjects.Graphics;
+  private skillIcon!: Phaser.GameObjects.Image;
+  private skillText!: Phaser.GameObjects.Text;
+  private skillTimer!: Phaser.GameObjects.Text;
 
   constructor() {
     super(SCENES.hud);
@@ -58,6 +72,26 @@ export class HudScene extends Phaser.Scene {
       .text(GAME_WIDTH / 2, BOSS_BAR_Y + BOSS_BAR_HEIGHT / 2, 'BOSS', { ...style, fontSize: '18px' })
       .setOrigin(0.5)
       .setVisible(false);
+
+    // Hero skill button, bottom-right. The stage ignores drags that start on it.
+    this.skillGfx = this.add.graphics().setDepth(2);
+    this.skillIcon = this.add.image(SKILL_BUTTON.x, SKILL_BUTTON.y - 8, TEXTURES.heroSarge).setDepth(3).setScale(0.7);
+    this.skillText = this.add
+      .text(SKILL_BUTTON.x, SKILL_BUTTON.y + 30, '', { ...style, fontSize: '16px' })
+      .setOrigin(0.5)
+      .setDepth(3);
+    this.skillTimer = this.add
+      .text(SKILL_BUTTON.x, SKILL_BUTTON.y - 8, '', { ...style, fontSize: '34px' })
+      .setOrigin(0.5)
+      .setDepth(4);
+    this.add
+      .zone(SKILL_BUTTON.x, SKILL_BUTTON.y, SKILL_BUTTON.radius * 2 + 24, SKILL_BUTTON.radius * 2 + 24)
+      .setInteractive()
+      .setName('skill')
+      .on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, () => {
+        const stage = this.scene.get(SCENES.stage) as StageScene | null;
+        if (stage?.useSkill()) this.cameras.main.flash(120, 255, 255, 255, false);
+      });
   }
 
   update(): void {
@@ -70,7 +104,7 @@ export class HudScene extends Phaser.Scene {
     this.soldiersText.setColor(s.soldiers <= 2 ? COLORS.bad : COLORS.text);
     this.killsText.setText(`KILLS ${s.kills}`);
     if (s.fireRate !== 1) {
-      this.fireRateText.setText(`x${s.fireRate} FIRE`).setColor(s.fireRate > 1 ? COLORS.good : COLORS.bad).setVisible(true);
+      this.fireRateText.setText(`x${Number(s.fireRate.toFixed(1))} FIRE`).setColor(s.fireRate > 1 ? COLORS.good : COLORS.bad).setVisible(true);
     } else {
       this.fireRateText.setVisible(false);
     }
@@ -96,5 +130,51 @@ export class HudScene extends Phaser.Scene {
     } else {
       this.bossText.setVisible(false);
     }
+
+    this.drawSkill(s.skill);
+  }
+
+  private drawSkill(skill: SkillState): void {
+    const { x, y, radius } = SKILL_BUTTON;
+    const hero = skill.hero;
+    const ready = skill.cooldownRemainingMs <= 0;
+    const active = skill.activeRemainingMs > 0;
+    const g = this.skillGfx;
+    g.clear();
+    g.fillStyle(0x0b0f14, 0.7);
+    g.fillCircle(x, y, radius + 6);
+    g.fillStyle(hero.tint, ready ? 1 : 0.35);
+    g.fillCircle(x, y, radius);
+    if (!ready) {
+      // Cooldown sweep: dark wedge shrinking clockwise from 12 o'clock.
+      const fraction = skill.cooldownRemainingMs / hero.cooldownMs;
+      g.fillStyle(0x000000, 0.55);
+      g.slice(x, y, radius, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * fraction), false);
+      g.fillPath();
+    }
+    if (active) {
+      const fraction = skill.activeRemainingMs / Math.max(1, hero.durationMs);
+      g.lineStyle(6, 0xffffff, 1);
+      g.beginPath();
+      g.arc(x, y, radius + 3, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * fraction), false);
+      g.strokePath();
+    }
+    g.lineStyle(4, ready ? 0xffffff : 0x3a4452, 1);
+    g.strokeCircle(x, y, radius);
+
+    this.skillIcon.setTexture(heroTexture(hero)).setAlpha(ready ? 1 : 0.4);
+    this.skillText.setText(SKILL_LABEL[hero.skill]);
+    this.skillTimer.setText(ready ? '' : String(Math.ceil(skill.cooldownRemainingMs / 1000)));
+  }
+}
+
+function heroTexture(hero: HeroDef): string {
+  switch (hero.id) {
+    case 'sarge':
+      return TEXTURES.heroSarge;
+    case 'doc':
+      return TEXTURES.heroDoc;
+    case 'blaze':
+      return TEXTURES.heroBlaze;
   }
 }
