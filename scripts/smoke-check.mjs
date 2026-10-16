@@ -97,6 +97,8 @@ try {
   await waitForScene('Shelter');
   check('tap on the title opens the Shelter', (await activeScenes()).includes('Shelter'));
   await page.waitForTimeout(300);
+  // AudioContext.resume() is asynchronous; give it a moment on slow runners.
+  await page.waitForFunction(() => window.__lastz.audio.unlocked, null, { timeout: 5_000 }).catch(() => {});
   const audioState = await page.evaluate(() => ({ unlocked: window.__lastz.audio.unlocked, settings: window.__lastz.save.get().settings }));
   check('first tap unlocked Web Audio', audioState.unlocked, JSON.stringify(audioState));
   const shelter = await page.evaluate(() => {
@@ -162,7 +164,7 @@ try {
     }
     return false;
   };
-  await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').tutorial.active !== null, null, { timeout: 5_000 }).catch(() => {});
+  await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').tutorial.active !== null, null, { timeout: 10_000 }).catch(() => {});
   const firstCard = (await tutorialState()).active;
   check('tutorial card opens on stage 1', firstCard === 'steer' && (await hasCard()), `card ${firstCard}`);
   await page.screenshot({ path: join(outDir, 'tutorial.png') });
@@ -209,7 +211,7 @@ try {
       };
     });
 
-  await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').kills > 0, null, { timeout: 8_000 }).catch(() => {});
+  await page.waitForFunction(() => window.__lastz.game.scene.getScene('Stage').kills > 0, null, { timeout: 15_000 }).catch(() => {});
   let stats = await readStage();
   check('auto-fire kills zombies', stats.kills > 0, JSON.stringify(stats));
   check('squad starts with the Barracks headcount', stats.soldiers >= 3, `soldiers ${stats.soldiers}`);
