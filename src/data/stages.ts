@@ -127,22 +127,31 @@ export interface CurveRow {
   redTroops: number;
 }
 
+// Tuned with the autoplay bot at the EXPECTED_LEVELS path in balance.ts (M3 balance pass).
+// Squad damage output grows roughly with soldiers x Armory x Lab (excess fire rate is folded
+// into bullet damage), and gates fill the squad to its cap by mid-game, so zombie and wall HP
+// have to grow quadratically to keep zombies reaching the squad at all: x1.6 at stage 2,
+// x3.9 at stage 5, x8.5 at stage 9, x15 at stage 13, x30 at stage 20.
 export function curveRow(n: number): CurveRow {
   const k = n - 1;
   return {
     bossAt: 60 + k * 2,
-    hp: 1 + 0.4 * k,
+    hp: 1 + 0.5 * k + 0.055 * k * k,
     speed: 1 + 0.015 * k,
-    bossHp: 1 + 0.4 * k,
+    bossHp: 1 + 0.5 * k + 0.05 * k * k,
     density: 1 + 0.04 * k,
     brutesEvery: Math.max(3, 6 - Math.floor(k / 4)),
-    barrierHp: 25 + 10 * k,
+    barrierHp: Math.round((25 + 10 * k) * (1 + 0.04 * k * k)),
     greenTroops: 2 + Math.floor(k / 5),
     redTroops: 2 + Math.floor(k / 7),
   };
 }
 
 const SPREADS: readonly WaveSpread[] = ['line', 'spread', 'left', 'right', 'center'];
+/** Seconds into a generated stage before the first brute wave may spawn. */
+const FIRST_BRUTE_AT = 18;
+/** Seconds into a generated stage before a wall may span the whole road. */
+const FIRST_FULL_WALL_AT = 20;
 
 /** Small deterministic PRNG so a stage looks the same every time it is played. */
 function mulberry32(seed: number): () => number {
@@ -165,19 +174,27 @@ export function makeStage(n: number): StageDef {
   const events: StageEvent[] = [];
 
   // Waves: walkers by default, runners every third wave, brutes every brutesEvery-th.
+  // Waves start thin and thicken towards the boss (x0.4 -> x1.3), because the squad itself
+  // grows through the gates; brutes stay out of the first FIRST_BRUTE_AT seconds so a
+  // Barracks-sized squad is never asked to stop one before it has picked anything up.
   const waveGap = 3.4 / Math.sqrt(row.density);
   let t = 1;
   for (let i = 0; t < row.bossAt - 5; i++) {
-    const kind: EnemyKind = (i + 1) % row.brutesEvery === 0 ? 'brute' : i % 3 === 1 ? 'runner' : 'walker';
+    const ramp = 0.4 + 0.9 * (t / row.bossAt);
+    let kind: EnemyKind = (i + 1) % row.brutesEvery === 0 ? 'brute' : i % 3 === 1 ? 'runner' : 'walker';
+    if (kind === 'brute' && t < FIRST_BRUTE_AT) kind = 'walker';
     const count =
       kind === 'brute'
-        ? Math.max(1, Math.round(1 + n * 0.12))
-        : Math.max(2, Math.round((4 + n * 0.2) * row.density * (kind === 'runner' ? 0.8 : 1)));
+        ? Math.max(1, Math.round((1 + n * 0.12) * ramp))
+        : Math.max(2, Math.round((4 + n * 0.2) * row.density * ramp * (kind === 'runner' ? 0.8 : 1)));
     const interval = kind === 'brute' ? 1 : kind === 'runner' ? 0.3 : 0.45;
     if (t + (count - 1) * interval > row.bossAt - 1) break;
     events.push({ type: 'wave', at: round1(t), enemy: kind, count, interval, spread: pick(SPREADS) });
     t += waveGap;
   }
+
+  // Walls get tougher through the stage too, in step with the squad.
+  const wallHp = (t: number, factor: number) => Math.round(row.barrierHp * factor * (0.5 + 0.5 * (t / row.bossAt)));
 
   // Gate rows every 8 s. Most rows are a green/red choice; some are two greens;
   // some pair a single green with a barrier blocking the other half.
@@ -205,15 +222,17 @@ export function makeStage(n: number): StageDef {
       });
     } else {
       events.push({ type: 'gate', at: g, [greenSide]: pick(greens) });
-      events.push({ type: 'barrier', at: g, side: otherSide, hp: Math.round(row.barrierHp * 0.8) });
+      events.push({ type: 'barrier', at: g, side: otherSide, hp: wallHp(g, 0.8) });
     }
   }
 
-  // Standalone barriers every 13 s; full-width walls get more common later.
-  for (let b = 11; b < row.bossAt - 8; b += 13) {
-    const full = rng() < 0.2 + n * 0.02;
+  // Standalone barriers every 16 s, offset from the 8 s gate rows so a wall never lands
+  // right behind a gate row (two walls a second apart blocked both halves of the road).
+  for (let b = 8; b < row.bossAt - 8; b += 16) {
+    // Full-width walls only once the squad has had a few gates to grow.
+    const full = rng() < 0.2 + n * 0.02 && b >= FIRST_FULL_WALL_AT;
     const side: BarrierSide = full ? 'full' : pick(['left', 'right'] as const);
-    events.push({ type: 'barrier', at: b, side, hp: Math.round(row.barrierHp * (full ? 1 : 1.2)) });
+    events.push({ type: 'barrier', at: b, side, hp: wallHp(b, full ? 1 : 1.2) });
   }
 
   events.push({ type: 'boss', at: row.bossAt });

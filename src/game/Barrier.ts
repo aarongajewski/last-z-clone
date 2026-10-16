@@ -52,7 +52,7 @@ export class Barrier extends Phaser.Physics.Arcade.Image {
   /** Applies damage; returns true when the barrier is destroyed. */
   hit(damage: number, now: number): boolean {
     this.hp -= damage;
-    this.label.setText(String(Math.max(0, this.hp)));
+    this.label.setText(String(Math.max(0, Math.ceil(this.hp))));
     if (this.hp <= 0) return true;
     if (now >= this.flashUntil + HIT_FLASH_GAP_MS) {
       this.setTintFill(0xffffff);
