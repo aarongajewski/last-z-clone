@@ -65,6 +65,17 @@ export interface StageStartData {
   stage?: number;
 }
 
+/** Creates a pooled group's full complement of inactive members. */
+function prewarm(group: Phaser.Physics.Arcade.Group): void {
+  const quantity = group.maxSize - group.getLength();
+  if (quantity <= 0) return;
+  group.createMultiple({ key: TEXTURES.spark, quantity, active: false, visible: false });
+  for (const child of group.getChildren()) {
+    const body = (child as Phaser.Physics.Arcade.Image).body;
+    if (body && !child.active) (child as Phaser.Physics.Arcade.Image).disableBody(true, true);
+  }
+}
+
 interface BlastCandidate {
   x: number;
   y: number;
@@ -172,6 +183,8 @@ export class StageScene extends Phaser.Scene {
     this.barriers = this.physics.add.group({ classType: Barrier, maxSize: 8, runChildUpdate: true });
     this.projectiles = this.physics.add.group({ classType: Projectile, maxSize: 30, runChildUpdate: true });
     this.pickups = this.physics.add.group({ classType: Pickup, maxSize: 6, runChildUpdate: true });
+    // Fill every pool up front so nothing is constructed (or gets a new text texture) mid-stage.
+    for (const group of [this.bullets, this.enemies, this.gates, this.barriers, this.projectiles, this.pickups]) prewarm(group);
     this.grenades = Array.from({ length: 4 }, () => this.add.existing(new Grenade(this, 0, 0)) as Grenade);
     this.fx = new StageFx(this);
 
