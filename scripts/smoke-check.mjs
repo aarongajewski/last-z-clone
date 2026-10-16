@@ -19,9 +19,12 @@ mkdirSync(outDir, { recursive: true });
 
 const DESIGN_WIDTH = 540;
 const results = [];
+const startedAt = Date.now();
 const check = (name, ok, detail = '') => {
-  results.push({ name, ok, detail });
+  results.push({ name, ok, detail, atMs: Date.now() - startedAt });
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
+  // GitHub Actions turns these into annotations on the run, readable without downloading the log.
+  if (!ok && process.env.GITHUB_ACTIONS) console.log(`::error title=smoke check failed::${name} ${detail}`.replace(/\n/g, ' '));
 };
 
 const launchOptions = {
@@ -246,6 +249,9 @@ try {
   await page.screenshot({ path: join(outDir, 'stage.png') });
 
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+  const fps = await page.evaluate(() => Math.round(window.__lastz.game.loop.actualFps));
+  console.log(`fps at the end: ${fps}`);
+  if (process.env.GITHUB_ACTIONS) console.log(`::notice title=smoke check::${results.filter((r) => r.ok).length}/${results.length} passed, ${fps} fps, ${Math.round((Date.now() - startedAt) / 1000)} s`);
 } catch (err) {
   check('smoke check ran to completion', false, String(err).split('\n')[0]);
   await page.screenshot({ path: join(outDir, 'failure.png') }).catch(() => {});
