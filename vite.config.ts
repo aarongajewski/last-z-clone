@@ -40,7 +40,9 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,png,svg,ico,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,ico,json,webmanifest}'],
+        // iOS fetches launch screens itself when the app is added to the Home Screen.
+        globIgnores: ['**/splash/**'],
         // The Phaser bundle is well above workbox's 2 MiB default.
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         clientsClaim: true,

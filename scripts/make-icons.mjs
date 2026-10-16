@@ -40,10 +40,10 @@ function pngChunk(type, data) {
   return Buffer.concat([length, typeBytes, data, crc]);
 }
 
-function encodePng(size, rgba) {
+function encodePng(size, rgba, height = size) {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(size, 0);
-  header.writeUInt32BE(size, 4);
+  header.writeUInt32BE(height, 4);
   header[8] = 8; // bit depth
   header[9] = 6; // RGBA
   header[10] = 0;
@@ -51,8 +51,8 @@ function encodePng(size, rgba) {
   header[12] = 0;
 
   const stride = size * 4;
-  const raw = Buffer.alloc((stride + 1) * size);
-  for (let y = 0; y < size; y++) {
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
     raw[y * (stride + 1)] = 0; // filter: none
     rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
   }
@@ -68,23 +68,34 @@ function encodePng(size, rgba) {
 // ---- Tiny rasteriser --------------------------------------------------------
 
 class Raster {
-  constructor(size) {
+  constructor(size, height = size) {
     this.size = size;
+    this.height = height;
     this.w = size * SUPERSAMPLE;
-    this.data = new Float32Array(this.w * this.w * 4);
+    this.h = height * SUPERSAMPLE;
+    this.data = new Float32Array(this.w * this.h * 4);
+    // Unit coordinates map onto this square region (in pixels); defaults to the whole image.
+    this.frame = { x: 0, y: 0, s: size };
+  }
+
+  /** Draws subsequent shapes into a square of `s` px at (x, y), e.g. an icon centred on a splash. */
+  setFrame(x, y, s) {
+    this.frame = { x, y, s };
   }
 
   // Shapes are described in unit coordinates (0..1) so one drawing scales to every icon size.
   paint(color, bbox, inside) {
     const [r, g, b] = color;
-    const x0 = Math.max(0, Math.floor(bbox[0] * this.w));
-    const y0 = Math.max(0, Math.floor(bbox[1] * this.w));
-    const x1 = Math.min(this.w, Math.ceil(bbox[2] * this.w));
-    const y1 = Math.min(this.w, Math.ceil(bbox[3] * this.w));
+    const f = this.frame;
+    const toPx = (u, offset) => (offset + u * f.s) * SUPERSAMPLE;
+    const x0 = Math.max(0, Math.floor(toPx(bbox[0], f.x)));
+    const y0 = Math.max(0, Math.floor(toPx(bbox[1], f.y)));
+    const x1 = Math.min(this.w, Math.ceil(toPx(bbox[2], f.x)));
+    const y1 = Math.min(this.h, Math.ceil(toPx(bbox[3], f.y)));
     for (let py = y0; py < y1; py++) {
       for (let px = x0; px < x1; px++) {
-        const ux = (px + 0.5) / this.w;
-        const uy = (py + 0.5) / this.w;
+        const ux = ((px + 0.5) / SUPERSAMPLE - f.x) / f.s;
+        const uy = ((py + 0.5) / SUPERSAMPLE - f.y) / f.s;
         if (!inside(ux, uy)) continue;
         const i = (py * this.w + px) * 4;
         this.data[i] = r;
@@ -92,6 +103,16 @@ class Raster {
         this.data[i + 2] = b;
         this.data[i + 3] = 255;
       }
+    }
+  }
+
+  fill(color) {
+    const [r, g, b] = color;
+    for (let i = 0; i < this.data.length; i += 4) {
+      this.data[i] = r;
+      this.data[i + 1] = g;
+      this.data[i + 2] = b;
+      this.data[i + 3] = 255;
     }
   }
 
@@ -119,10 +140,15 @@ class Raster {
   }
 
   toPng() {
-    const { size, w, data } = this;
-    const out = Buffer.alloc(size * size * 4);
+    return encodePng(this.size, this.toRgba(), this.height);
+  }
+
+  /** Downsamples the supersampled buffer to premultiplied-free RGBA at the output size. */
+  toRgba() {
+    const { size, height, w, data } = this;
+    const out = Buffer.alloc(size * height * 4);
     const samples = SUPERSAMPLE * SUPERSAMPLE;
-    for (let y = 0; y < size; y++) {
+    for (let y = 0; y < height; y++) {
       for (let x = 0; x < size; x++) {
         let r = 0;
         let g = 0;
@@ -147,7 +173,7 @@ class Raster {
         out[o + 3] = Math.round((a / samples) * 255);
       }
     }
-    return encodePng(size, out);
+    return out;
   }
 }
 
@@ -188,11 +214,71 @@ const ICONS = [
   { file: 'maskable-512x512.png', size: 512, fullBleed: true, safeZone: 0.8 },
 ];
 
-mkdirSync(OUT_DIR, { recursive: true });
-for (const icon of ICONS) {
-  const raster = new Raster(icon.size);
-  drawIcon(raster, icon);
-  const png = raster.toPng();
-  writeFileSync(join(OUT_DIR, icon.file), png);
-  console.log(`${icon.file}  ${icon.size}x${icon.size}  ${png.length} bytes`);
+// iOS launch screens (apple-touch-startup-image). Keyed by CSS size and pixel ratio; index.html
+// carries the matching media queries. Phones that share a CSS size reuse one image.
+export const SPLASHES = [
+  { css: [440, 956], dpr: 3 }, // iPhone 16 Pro Max
+  { css: [402, 874], dpr: 3 }, // iPhone 16 Pro
+  { css: [430, 932], dpr: 3 }, // iPhone 15 Pro Max, 15 Plus, 14 Pro Max, 16 Plus
+  { css: [393, 852], dpr: 3 }, // iPhone 15, 15 Pro, 14 Pro, 16
+  { css: [390, 844], dpr: 3 }, // iPhone 14, 13, 13 Pro, 12, 12 Pro
+  { css: [428, 926], dpr: 3 }, // iPhone 14 Plus, 13 Pro Max, 12 Pro Max
+  { css: [375, 812], dpr: 3 }, // iPhone 13 mini, 12 mini, 11 Pro, XS, X
+  { css: [414, 896], dpr: 3 }, // iPhone 11 Pro Max, XS Max
+  { css: [414, 896], dpr: 2 }, // iPhone 11, XR
+  { css: [414, 736], dpr: 3 }, // iPhone 8 Plus
+  { css: [375, 667], dpr: 2 }, // iPhone SE (2nd/3rd gen), 8
+];
+
+export const splashFile = ({ css, dpr }) => `splash-${css[0] * dpr}x${css[1] * dpr}.png`;
+
+/** Flat background with the app icon composited in the middle; the big canvas is never supersampled. */
+function splashPng(width, height) {
+  const [br, bg, bb] = PALETTE.background;
+  const out = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < out.length; i += 4) {
+    out[i] = br;
+    out[i + 1] = bg;
+    out[i + 2] = bb;
+    out[i + 3] = 255;
+  }
+  const iconSize = Math.round(width * 0.42);
+  const icon = new Raster(iconSize);
+  drawIcon(icon, { fullBleed: true, safeZone: 1 });
+  const rgba = icon.toRgba();
+  const ox = Math.round((width - iconSize) / 2);
+  const oy = Math.round((height - iconSize) / 2) - Math.round(width * 0.04);
+  for (let y = 0; y < iconSize; y++) {
+    for (let x = 0; x < iconSize; x++) {
+      const s = (y * iconSize + x) * 4;
+      const a = rgba[s + 3] / 255;
+      if (a === 0) continue;
+      const d = ((oy + y) * width + ox + x) * 4;
+      out[d] = Math.round(rgba[s] * a + out[d] * (1 - a));
+      out[d + 1] = Math.round(rgba[s + 1] * a + out[d + 1] * (1 - a));
+      out[d + 2] = Math.round(rgba[s + 2] * a + out[d + 2] * (1 - a));
+    }
+  }
+  return encodePng(width, out, height);
+}
+
+const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+if (isMain) {
+  mkdirSync(OUT_DIR, { recursive: true });
+  for (const icon of ICONS) {
+    const raster = new Raster(icon.size);
+    drawIcon(raster, icon);
+    const png = raster.toPng();
+    writeFileSync(join(OUT_DIR, icon.file), png);
+    console.log(`${icon.file}  ${icon.size}x${icon.size}  ${png.length} bytes`);
+  }
+
+  const SPLASH_DIR = join(OUT_DIR, '..', 'splash');
+  mkdirSync(SPLASH_DIR, { recursive: true });
+  for (const splash of SPLASHES) {
+    const [w, h] = splash.css.map((v) => v * splash.dpr);
+    const png = splashPng(w, h);
+    writeFileSync(join(SPLASH_DIR, splashFile(splash)), png);
+    console.log(`${splashFile(splash)}  ${w}x${h}  ${png.length} bytes`);
+  }
 }
