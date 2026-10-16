@@ -68,6 +68,58 @@
           display: flex;
         }
       }
+      #install-hint[hidden] {
+        display: none;
+      }
+      #install-hint {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: #1b232e;
+        border: 1px solid #ffd166;
+        color: #e6edf3;
+        font-size: 15px;
+        line-height: 1.35;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        animation: install-hint-in 0.3s ease-out;
+      }
+      #install-hint .install-hint-text {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      #install-hint strong {
+        color: #ffd166;
+      }
+      #install-hint svg {
+        vertical-align: -5px;
+        margin: 0 2px;
+      }
+      #install-hint .install-hint-close {
+        flex: none;
+        width: 44px;
+        height: 44px;
+        border: 0;
+        border-radius: 12px;
+        background: #2a3340;
+        color: #e6edf3;
+        font-size: 26px;
+        line-height: 1;
+      }
+      @keyframes install-hint-in {
+        from {
+          transform: translateY(20px);
+          opacity: 0;
+        }
+      }
     </style>
   </head>
   <body>

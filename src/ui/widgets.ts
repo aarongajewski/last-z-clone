@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { audio } from '../audio/AudioEngine';
 import { COLORS, FONT } from '../config';
 
 export interface ButtonStyle {
@@ -54,6 +55,7 @@ export class Button extends Phaser.GameObjects.Container {
       if (!this.enabled) return;
       this.setScale(0.95);
       scene.time.delayedCall(90, () => this.setScale(1));
+      audio.play('tap');
       onTap();
     });
     scene.add.existing(this);

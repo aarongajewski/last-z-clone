@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, SAFE_TOP, SCENES } from '../config';
 import { HEROES, HERO_ORDER, type HeroId } from '../data/heroes';
 import { STAGE_COUNT } from '../data/stages';
+import { FACING_UP, SPRITE_SCALE, TEXTURES, heroFrame } from '../game/textures';
 import { isStageUnlocked, stageRecord } from '../meta/progress';
 import { saveStore } from '../meta/saveStore';
 import { formatCountdown } from '../meta/timers';
@@ -12,7 +13,7 @@ const GAP = 14;
 const COLS = 4;
 const GRID_LEFT = (GAME_WIDTH - (COLS * CELL + (COLS - 1) * GAP)) / 2;
 const GRID_TOP = 340;
-const HERO_Y = 240;
+const HERO_Y = 252;
 const HERO_X = [100, 270, 440];
 
 interface Cell {
@@ -47,19 +48,16 @@ export class StageSelectScene extends Phaser.Scene {
     ).setName('toShelter');
     makeText(this, GAME_WIDTH / 2, SAFE_TOP + 26, 'STAGES', 40, COLORS.accent, '900').setOrigin(0.5);
 
-    makeText(this, 24, 170, 'HERO', 20, COLORS.textDim);
+    makeText(this, 24, 160, 'HERO', 20, COLORS.textDim);
     this.heroRing = this.add.graphics();
     HERO_ORDER.forEach((id, i) => {
       const hero = HEROES[id];
-      const button = new Button(
-        this,
-        HERO_X[i] ?? 270,
-        HERO_Y,
-        `${hero.name}\n${hero.skillName}`,
-        { width: 150, height: 90, fontSize: 19, fill: 0x1b232e },
-        () => this.pickHero(id),
+      const x = HERO_X[i] ?? 270;
+      const button = new Button(this, x, HERO_Y, `\n\n${hero.name}\n${hero.skillName}`, { width: 150, height: 130, fontSize: 17, fill: 0x1b232e }, () =>
+        this.pickHero(id),
       ).setName(`hero-${id}`);
       this.heroButtons.set(id, button);
+      this.add.image(x, HERO_Y - 34, TEXTURES.atlas, heroFrame(id)).setScale(SPRITE_SCALE.heroPortrait * 0.6).setAngle(FACING_UP).setDepth(1);
     });
 
     for (let n = 1; n <= STAGE_COUNT; n++) {
@@ -125,7 +123,7 @@ export class StageSelectScene extends Phaser.Scene {
       button?.setFill(id === save.hero ? hero.tint : 0x1b232e);
       if (id === save.hero) {
         this.heroRing.lineStyle(4, 0xffffff, 1);
-        this.heroRing.strokeRoundedRect((HERO_X[i] ?? 270) - 79, HERO_Y - 49, 158, 98, 20);
+        this.heroRing.strokeRoundedRect((HERO_X[i] ?? 270) - 79, HERO_Y - 69, 158, 138, 20);
       }
     });
 

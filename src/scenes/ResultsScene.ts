@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { COLORS, FONT, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
 import type { Resources } from '../data/buildings';
-import { TEXTURES } from '../game/textures';
+import { audio } from '../audio/AudioEngine';
+import { FACING_DOWN, FACING_UP, FRAMES, SPRITE_SCALE, TEXTURES } from '../game/textures';
 import { formatNumber } from '../ui/widgets';
 
 export interface ResultsData {
@@ -51,8 +52,17 @@ export class ResultsScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    const icon = this.add.image(cx, 470, won ? TEXTURES.squad : TEXTURES.zombie).setScale(won ? 1.6 : 2.2);
-    if (!won) icon.setTint(COLORS.zombie);
+    if (won) {
+      for (const [x, y] of [
+        [cx, 450],
+        [cx - 44, 484],
+        [cx + 44, 484],
+      ] as const) {
+        this.add.image(x, y, TEXTURES.atlas, FRAMES.soldier).setScale(SPRITE_SCALE.soldier * 1.4).setAngle(FACING_UP);
+      }
+    } else {
+      this.add.image(cx, 470, TEXTURES.atlas, FRAMES.walker).setScale(1.3).setAngle(FACING_DOWN);
+    }
 
     const seconds = Math.round(timeMs / 1000);
     const lines = [`Kills  ${kills}`, `Soldiers left  ${soldiers}`, `Time  ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`];
@@ -98,8 +108,12 @@ export class ResultsScene extends Phaser.Scene {
     this.tweens.add({ targets: prompt, alpha: 1, duration: 300, delay: INPUT_LOCK_MS });
     this.tweens.add({ targets: prompt, alpha: 0.3, duration: 650, yoyo: true, repeat: -1, delay: INPUT_LOCK_MS + 300 });
 
+    audio.playMusic('calm');
     this.time.delayedCall(INPUT_LOCK_MS, () => {
-      this.input.once(Phaser.Input.Events.POINTER_DOWN, () => this.scene.start(SCENES.shelter));
+      this.input.once(Phaser.Input.Events.POINTER_DOWN, () => {
+        audio.play('tap');
+        this.scene.start(SCENES.shelter);
+      });
     });
   }
 }

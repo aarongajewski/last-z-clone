@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { BOSS, ENEMIES, type EnemyDef } from '../data/enemies';
-import { TEXTURES } from './textures';
+import { fitCircleBody } from './bodies';
+import { FACING_DOWN, TEXTURES } from './textures';
 
 const HIT_FLASH_MS = 60;
 /** Under sustained fire, flash at most this often so the boss stays readable. */
@@ -29,14 +30,23 @@ export class Boss extends Phaser.Physics.Arcade.Image {
   private handlers: BossHandlers | null = null;
   /** Translucent white copy shown briefly on hits, so the boss art stays visible underneath. */
   private readonly flash: Phaser.GameObjects.Image;
+  /** Pulsing glow underneath that marks it as the boss. */
+  private readonly aura: Phaser.GameObjects.Image;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
-    super(scene, x, y, TEXTURES.boss);
+    super(scene, x, y, TEXTURES.atlas, ENEMIES.boss.frame);
     scene.add.existing(this);
     scene.physics.add.existing(this);
-    this.setDepth(4).setScale(this.def.scale).setTint(this.def.tint);
-    this.body?.setCircle(60, 20, 30);
-    this.flash = scene.add.image(x, y, TEXTURES.boss).setScale(this.def.scale).setTintFill(0xffffff).setAlpha(0).setDepth(5);
+    this.setDepth(4).setScale(this.def.scale).setAngle(FACING_DOWN).setTint(this.def.tint);
+    fitCircleBody(this, 0.36);
+    this.aura = scene.add.image(x, y, TEXTURES.smoke).setScale(7).setTint(0x9a5cff).setAlpha(0).setDepth(3);
+    this.flash = scene.add
+      .image(x, y, TEXTURES.atlas, this.def.frame)
+      .setScale(this.def.scale)
+      .setAngle(FACING_DOWN)
+      .setTintFill(0xffffff)
+      .setAlpha(0)
+      .setDepth(5);
     this.disableBody(true, true);
   }
 
@@ -45,9 +55,12 @@ export class Boss extends Phaser.Physics.Arcade.Image {
     this.maxHp = Math.ceil(this.def.hp * hpMultiplier);
     this.hp = this.maxHp;
     this.phase = 'enter';
+    this.direction = 1;
     this.spitTimer = BOSS.spitIntervalMs * 0.75;
     this.summonTimer = BOSS.summonIntervalMs * 0.5;
     this.enableBody(true, x, y, true, true);
+    this.setAngle(FACING_DOWN);
+    this.aura.setAlpha(0.35);
     this.setVelocity(0, this.def.speed);
   }
 
@@ -75,12 +88,14 @@ export class Boss extends Phaser.Physics.Arcade.Image {
   despawn(): void {
     this.disableBody(true, true);
     this.flash.setAlpha(0);
+    this.aura.setAlpha(0);
   }
 
   /** Called from the scene each frame while active. */
   tick(time: number, delta: number): void {
     this.flash.setPosition(this.x, this.y);
     if (this.flash.alpha > 0 && time >= this.flashUntil) this.flash.setAlpha(0);
+    this.aura.setPosition(this.x, this.y + 10).setScale(6.5 + Math.sin(time / 180) * 0.5);
 
     if (this.phase === 'enter') {
       if (this.y >= BOSS.holdY) {
@@ -95,6 +110,9 @@ export class Boss extends Phaser.Physics.Arcade.Image {
     this.x += (this.direction * BOSS.patrolSpeed * delta) / 1000;
     if (this.x >= BOSS.patrolMaxX) this.direction = -1;
     if (this.x <= BOSS.patrolMinX) this.direction = 1;
+    // Lean into the walk direction.
+    this.setAngle(FACING_DOWN - this.direction * 6);
+    this.flash.setAngle(this.angle);
 
     this.spitTimer -= delta;
     if (this.spitTimer <= 0) {

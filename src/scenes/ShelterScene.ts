@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
+import { applyAudioSettings, audio } from '../audio/AudioEngine';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, SAFE_TOP, SCENES } from '../config';
 import { BUILDINGS, BUILDING_EFFECTS, BUILDING_ORDER, type BuildingId } from '../data/buildings';
+import { buildingIcon } from '../game/textures';
 import {
   buildSeconds,
   collectProduction,
@@ -10,7 +12,7 @@ import {
   upgradeBlocker,
   upgradeCost,
 } from '../meta/economy';
-import type { SaveData } from '../meta/save';
+import { updateSettings, type SaveData, type Settings } from '../meta/save';
 import { saveStore } from '../meta/saveStore';
 import { formatCountdown, formatDuration, remainingMs } from '../meta/timers';
 import { Button, drawPanel, formatNumber, makeText } from '../ui/widgets';
@@ -52,6 +54,7 @@ export class ShelterScene extends Phaser.Scene {
     this.cards = [];
     this.settings = null;
     this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.background);
+    audio.playMusic('calm');
 
     makeText(this, 24, SAFE_TOP + 4, 'SHELTER', 40, COLORS.accent, '900');
     new Button(this, GAME_WIDTH - 60, SAFE_TOP + 26, 'SETTINGS', { width: 150, height: 48, fontSize: 18, fill: 0x2a3340 }, () =>
@@ -91,9 +94,10 @@ export class ShelterScene extends Phaser.Scene {
     const g = this.add.graphics();
     drawPanel(g, left, top, CARD_W, CARD_H, CARD_FILL, 0x2a3340);
 
-    makeText(this, left + 16, top + 10, def.name.toUpperCase(), 24, COLORS.text, '900');
+    this.add.image(left + 36, top + 32, buildingIcon(id)).setScale(0.7);
+    makeText(this, left + 64, top + 10, def.name.toUpperCase(), 22, COLORS.text, '900');
     const level = makeText(this, left + CARD_W - 16, top + 12, '', 22, COLORS.accent, '800').setOrigin(1, 0);
-    const effect = makeText(this, left + 16, top + 42, '', 17, COLORS.textDim);
+    const effect = makeText(this, left + 64, top + 38, '', 15, COLORS.textDim).setWordWrapWidth(CARD_W - 80);
     const cost = makeText(this, left + 16, top + 64, '', 16, COLORS.text).setLineSpacing(2);
 
     const action = new Button(this, cx, top + CARD_H - 34, '', { width: CARD_W - 32, height: 48, fontSize: 20 }, () =>
@@ -172,7 +176,7 @@ export class ShelterScene extends Phaser.Scene {
   private effectLine(id: BuildingId, level: number): string {
     switch (id) {
       case 'hq':
-        return `Other buildings up to Lv ${level}`;
+        return `Caps other buildings at Lv ${level}`;
       case 'farm':
         return `${BUILDING_EFFECTS.farm(level)} food / min`;
       case 'mill':
@@ -219,27 +223,52 @@ export class ShelterScene extends Phaser.Scene {
     const container = this.add.container(0, 0).setDepth(30);
     const dim = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.7).setInteractive();
     const panel = this.add.graphics();
-    drawPanel(panel, 50, 380, GAME_WIDTH - 100, 420, 0x1b232e, 0x2a3340, 24);
-    const title = makeText(this, GAME_WIDTH / 2, 420, 'SETTINGS', 34, COLORS.accent, '900').setOrigin(0.5);
+    const top = 250;
+    drawPanel(panel, 50, top, GAME_WIDTH - 100, 680, 0x1b232e, 0x2a3340, 24);
+    const title = makeText(this, GAME_WIDTH / 2, top + 40, 'SETTINGS', 34, COLORS.accent, '900').setOrigin(0.5);
     const info = makeText(
       this,
       GAME_WIDTH / 2,
-      480,
+      top + 96,
       `Last Z Clone ${__APP_VERSION__}\nSave v${saveStore.get().version}, stage ${saveStore.get().highestUnlocked} unlocked`,
       20,
       COLORS.textDim,
     )
       .setOrigin(0.5)
       .setAlign('center');
-    this.resetButton = new Button(this, GAME_WIDTH / 2, 600, 'RESET PROGRESS', { width: 340, height: 64, fontSize: 24, fill: 0xe74c3c }, () =>
+
+    const toggleStyle = { width: 340, height: 60, fontSize: 22, fill: 0x2a3340 };
+    const sfx = new Button(this, GAME_WIDTH / 2, top + 190, '', toggleStyle, () => this.toggleSetting('sfx', sfx)).setName('toggleSfx');
+    const music = new Button(this, GAME_WIDTH / 2, top + 268, '', toggleStyle, () => this.toggleSetting('music', music)).setName('toggleMusic');
+    this.refreshToggle('sfx', sfx);
+    this.refreshToggle('music', music);
+    const tutorial = new Button(this, GAME_WIDTH / 2, top + 346, 'REPLAY TUTORIAL', toggleStyle, () => {
+      saveStore.update((s) => updateSettings(s, { tutorialDone: false }));
+      this.pop('Tutorial will show on stage 1', COLORS.accent);
+      this.closeSettings();
+    }).setName('replayTutorial');
+
+    this.resetButton = new Button(this, GAME_WIDTH / 2, top + 460, 'RESET PROGRESS', { width: 340, height: 64, fontSize: 24, fill: 0xe74c3c }, () =>
       this.resetTapped(),
     ).setName('reset');
-    const close = new Button(this, GAME_WIDTH / 2, 710, 'CLOSE', { width: 340, height: 64, fontSize: 24, fill: 0x2a3340 }, () =>
+    const close = new Button(this, GAME_WIDTH / 2, top + 590, 'CLOSE', { width: 340, height: 64, fontSize: 24, fill: 0x1f6feb }, () =>
       this.closeSettings(),
     ).setName('closeSettings');
-    container.add([dim, panel, title, info, this.resetButton, close]);
+    container.add([dim, panel, title, info, sfx, music, tutorial, this.resetButton, close]);
     this.settings = container;
     this.resetArmedUntil = 0;
+  }
+
+  private toggleSetting(key: 'sfx' | 'music', button: Button): void {
+    const next = !saveStore.get().settings[key];
+    saveStore.update((s) => updateSettings(s, { [key]: next } as Partial<Settings>));
+    applyAudioSettings(saveStore.get().settings);
+    this.refreshToggle(key, button);
+  }
+
+  private refreshToggle(key: 'sfx' | 'music', button: Button): void {
+    const on = saveStore.get().settings[key];
+    button.setLabel(`${key === 'sfx' ? 'SOUND EFFECTS' : 'MUSIC'}: ${on ? 'ON' : 'OFF'}`).setFill(on ? 0x2e7d4f : 0x2a3340);
   }
 
   private resetTapped(): void {

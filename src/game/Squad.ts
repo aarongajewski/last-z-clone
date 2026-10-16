@@ -1,12 +1,18 @@
 import Phaser from 'phaser';
 import { SQUAD } from '../data/squad';
 import type { GateEffect } from '../data/stages';
-import { formationOffsets } from './formation';
+import { fitCircleBody } from './bodies';
+import { formationOffsets, type Offset } from './formation';
 import { applyGateEffect, type SquadStats } from './gateMath';
 import { approach } from './squadMath';
-import { TEXTURES } from './textures';
+import { FACING_UP, FRAMES, SPRITE_SCALE, TEXTURES } from './textures';
 
 type SoldierSprite = Phaser.Physics.Arcade.Image;
+
+const HURT_FLASH_MS = 160;
+const HURT_TINT = 0xff6b6b;
+/** The rifle sits to the right of the rotated soldier; muzzle offset from the sprite centre. */
+const MUZZLE_OFFSET = { x: 9, y: -26 };
 
 /**
  * The player's squad: a formation of soldier sprites that follows a target x.
@@ -18,6 +24,10 @@ export class Squad {
   stats: SquadStats;
   readonly soldiers: Phaser.Physics.Arcade.Group;
   private muzzleIndex = 0;
+  private hurtUntil = 0;
+  /** Formation offsets per headcount, built once per count so update() allocates nothing. */
+  private readonly offsetCache = new Map<number, Offset[]>();
+  private readonly muzzlePoint = { x: 0, y: 0 };
 
   constructor(scene: Phaser.Scene, x: number, y: number, soldiers: number, fireRate = 1) {
     this.x = x;
@@ -25,7 +35,8 @@ export class Squad {
     this.stats = { soldiers, fireRate };
     this.soldiers = scene.physics.add.group({
       classType: Phaser.Physics.Arcade.Image,
-      defaultKey: TEXTURES.soldier,
+      defaultKey: TEXTURES.atlas,
+      defaultFrame: FRAMES.soldier,
       maxSize: SQUAD.maxSoldiers,
     });
     this.syncSprites(true);
@@ -39,22 +50,41 @@ export class Squad {
     return this.stats.soldiers > 0;
   }
 
-  update(delta: number, targetX: number): void {
+  update(delta: number, targetX: number, time: number): void {
     this.x = approach(this.x, targetX, SQUAD.followRate, delta);
-    const offsets = formationOffsets(this.stats.soldiers);
-    this.activeSprites().forEach((sprite, i) => {
-      const offset = offsets[i] ?? { x: 0, y: 0 };
+    const offsets = this.offsets(this.stats.soldiers);
+    const hurt = time < this.hurtUntil;
+    let i = 0;
+    for (const child of this.soldiers.getChildren()) {
+      const sprite = child as SoldierSprite;
+      if (!sprite.active) continue;
+      const offset = offsets[i] ?? offsets[0] ?? { x: 0, y: 0 };
       sprite.x = approach(sprite.x, this.x + offset.x, SQUAD.regroupRate, delta);
       sprite.y = approach(sprite.y, this.y + offset.y, SQUAD.regroupRate, delta);
-    });
+      if (!hurt && sprite.isTinted) sprite.clearTint();
+      i++;
+    }
   }
 
-  /** Next soldier's gun position, cycling through the formation. */
+  /** Next soldier's gun position, cycling through the formation. Returns a reused point. */
   muzzle(): { x: number; y: number } {
-    const sprites = this.activeSprites();
-    const sprite = sprites[this.muzzleIndex % Math.max(1, sprites.length)];
+    const children = this.soldiers.getChildren();
+    const active = this.stats.soldiers;
+    let pick = active > 0 ? this.muzzleIndex % active : 0;
     this.muzzleIndex++;
-    return sprite ? { x: sprite.x, y: sprite.y - 24 } : { x: this.x, y: this.y - 24 };
+    for (const child of children) {
+      const sprite = child as SoldierSprite;
+      if (!sprite.active) continue;
+      if (pick === 0) {
+        this.muzzlePoint.x = sprite.x + MUZZLE_OFFSET.x;
+        this.muzzlePoint.y = sprite.y + MUZZLE_OFFSET.y;
+        return this.muzzlePoint;
+      }
+      pick--;
+    }
+    this.muzzlePoint.x = this.x;
+    this.muzzlePoint.y = this.y + MUZZLE_OFFSET.y;
+    return this.muzzlePoint;
   }
 
   applyGate(effect: GateEffect): SquadStats {
@@ -64,15 +94,32 @@ export class Squad {
   }
 
   /** Removes soldiers; returns how many actually died. */
-  takeHit(damage: number): number {
+  takeHit(damage: number, now = 0): number {
     const before = this.stats.soldiers;
     this.stats = { ...this.stats, soldiers: Math.max(0, before - damage) };
     this.syncSprites(false);
-    return before - this.stats.soldiers;
+    const lost = before - this.stats.soldiers;
+    if (lost > 0) {
+      this.hurtUntil = now + HURT_FLASH_MS;
+      for (const child of this.soldiers.getChildren()) {
+        const sprite = child as SoldierSprite;
+        if (sprite.active) sprite.setTint(HURT_TINT);
+      }
+    }
+    return lost;
   }
 
   activeSprites(): SoldierSprite[] {
     return this.soldiers.getMatching('active', true) as SoldierSprite[];
+  }
+
+  private offsets(count: number): Offset[] {
+    let cached = this.offsetCache.get(count);
+    if (!cached) {
+      cached = formationOffsets(count);
+      this.offsetCache.set(count, cached);
+    }
+    return cached;
   }
 
   private syncSprites(snap: boolean): void {
@@ -80,7 +127,7 @@ export class Squad {
     for (let i = active.length - 1; i >= this.stats.soldiers; i--) {
       active[i]?.disableBody(true, true);
     }
-    const offsets = formationOffsets(this.stats.soldiers);
+    const offsets = this.offsets(this.stats.soldiers);
     for (let i = active.length; i < this.stats.soldiers; i++) {
       const offset = offsets[i] ?? { x: 0, y: 0 };
       // Reinforcements step in from the back row so they visibly join the formation.
@@ -89,8 +136,9 @@ export class Squad {
       const sprite = this.soldiers.get(spawnX, spawnY) as SoldierSprite | null;
       if (!sprite) break;
       sprite.enableBody(true, spawnX, spawnY, true, true);
-      sprite.setDepth(5);
-      sprite.body?.setSize(24, 28, true);
+      sprite.setTexture(TEXTURES.atlas, FRAMES.soldier).setScale(SPRITE_SCALE.soldier).setAngle(FACING_UP).setDepth(5);
+      sprite.clearTint();
+      fitCircleBody(sprite, 0.36);
     }
   }
 }

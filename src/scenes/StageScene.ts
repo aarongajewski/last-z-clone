@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
+import { audio } from '../audio/AudioEngine';
 import { COLORS, FONT, GAME_HEIGHT, GAME_WIDTH, SCENES } from '../config';
 import { BOSS, ENEMIES, type EnemyKind } from '../data/enemies';
 import { HEROES, SKILLS, type HeroDef } from '../data/heroes';
+import { GRENADE, POWERUPS, type PowerUpId } from '../data/powerups';
 import { SQUAD } from '../data/squad';
 import { getStage, type BarrierSide, type GateEvent, type StageDef } from '../data/stages';
 import { Barrier } from '../game/Barrier';
@@ -9,29 +11,63 @@ import { Boss } from '../game/Boss';
 import { Bullet } from '../game/Bullet';
 import { Enemy } from '../game/Enemy';
 import { Gate } from '../game/Gate';
+import { Grenade } from '../game/Grenade';
+import { Pickup } from '../game/Pickup';
 import { Projectile } from '../game/Projectile';
 import { Squad } from '../game/Squad';
-import { fireIntervalMs, gateLabel, isPenalty } from '../game/gateMath';
-import { aimVelocity } from '../game/squadMath';
-import { BARRIER_HEIGHT, GATE_HEIGHT, TEXTURES } from '../game/textures';
-import { Timeline, buildSchedule, stageProgress, type SpawnEvent } from '../game/waveSchedule';
+import { StageFx } from '../game/StageFx';
+import { fireDamageMultiplier, fireIntervalMs, gateLabel, isPenalty } from '../game/gateMath';
+import {
+  EMPTY_POWERUPS,
+  bestBlastPoint,
+  canThrowGrenade,
+  collectPowerUp,
+  pickupForKill,
+  scheduledPickups,
+  spreadActive,
+  spreadRemainingMs,
+  spreadVelocities,
+  throwGrenade,
+  type PowerUpState,
+} from '../game/powerups';
+import { aimVelocity, type Vec2 } from '../game/squadMath';
+import { BARRIER_HEIGHT, BARRIER_FULL_WIDTH, BARRIER_HALF_WIDTH, GATE_HEIGHT, PICKUP_SIZE, TEXTURES } from '../game/textures';
+import {
+  createTutorial,
+  dismissStep,
+  isTutorialPaused,
+  skipTutorial,
+  triggerStep,
+  type TutorialState,
+  type TutorialStep,
+} from '../game/tutorial';
+import { LANES, Timeline, buildSchedule, stageProgress, type SpawnEvent } from '../game/waveSchedule';
 import { squadLoadout, type SquadLoadout } from '../meta/economy';
 import { applyStageResult } from '../meta/progress';
+import { updateSettings } from '../meta/save';
 import { saveStore } from '../meta/saveStore';
 import { TouchInput } from '../ui/TouchInput';
-import type { HudState, SkillState } from './HudScene';
+import type { HudScene, HudState, SkillState } from './HudScene';
 import type { ResultsData } from './ResultsScene';
 
-type Target = { x: number; y: number; vx: number; vy: number };
 type Collider = Phaser.Types.Physics.Arcade.ArcadePhysicsCallback;
 
 const SPAWN_Y = -60;
 const RESULTS_DELAY_MS = 1400;
+/** The first tutorial card waits for the stage banner to fade. */
+const TUTORIAL_FIRST_CARD_MS = 900;
+const TUTORIAL_SKILL_AT_S = 9;
+const BOSS_SHAKE_GAP_MS = 300;
 /** Where the HUD draws the skill button; drags starting there are ignored. */
 export const SKILL_BUTTON = { x: GAME_WIDTH - 72, y: GAME_HEIGHT - 110, radius: 56 };
 
 export interface StageStartData {
   stage?: number;
+}
+
+interface BlastCandidate {
+  x: number;
+  y: number;
 }
 
 export class StageScene extends Phaser.Scene {
@@ -45,21 +81,49 @@ export class StageScene extends Phaser.Scene {
   elapsed = 0;
   result: 'won' | 'lost' | null = null;
   gates!: Phaser.Physics.Arcade.Group;
+  enemies!: Phaser.Physics.Arcade.Group;
+  barriers!: Phaser.Physics.Arcade.Group;
+  projectiles!: Phaser.Physics.Arcade.Group;
+  pickups!: Phaser.Physics.Arcade.Group;
+  powerUps: PowerUpState = EMPTY_POWERUPS;
+  tutorial: TutorialState = createTutorial(false);
+  /** Public so automation can steer without synthesising touch events. */
+  touch!: TouchInput;
 
   private road!: Phaser.GameObjects.TileSprite;
-  private touch!: TouchInput;
   private timeline!: Timeline;
   private bullets!: Phaser.Physics.Arcade.Group;
-  private enemies!: Phaser.Physics.Arcade.Group;
-  private barriers!: Phaser.Physics.Arcade.Group;
-  private projectiles!: Phaser.Physics.Arcade.Group;
+  private grenades: Grenade[] = [];
+  private fx!: StageFx;
   private countLabel!: Phaser.GameObjects.Text;
   private shieldRing!: Phaser.GameObjects.Image;
   private rapidRing!: Phaser.GameObjects.Image;
+  private screenTint!: Phaser.GameObjects.Rectangle;
   private fireAccumulator = 0;
+  /** Damage per bullet this frame: Armory damage times the fire-rate overflow. */
+  private bulletDamage = 1;
   private skillReadyAt = 0;
   private shieldUntil = 0;
   private rapidUntil = 0;
+  private lastBossShake = 0;
+  private scheduledDrops: { at: number; id: PowerUpId }[] = [];
+  private nextScheduledDrop = 0;
+  private readonly dispatchBound = (event: SpawnEvent) => this.dispatch(event);
+  private readonly fanScratch: Vec2[] = [];
+  private readonly blastScratch: BlastCandidate[] = [];
+  private readonly target = { x: 0, y: 0, vx: 0, vy: 0, found: false };
+  private readonly hud: HudState = {
+    stageName: '',
+    progress: 0,
+    soldiers: 0,
+    maxSoldiers: SQUAD.maxSoldiers,
+    fireRate: 1,
+    kills: 0,
+    boss: null,
+    skill: { hero: HEROES.sarge, cooldownRemainingMs: 0, activeRemainingMs: 0 },
+    powerUps: { spreadMs: 0, spreadTotalMs: POWERUPS.spread.durationMs, grenades: 0 },
+  };
+  private readonly bossHp = { hp: 0, maxHp: 1 };
 
   constructor() {
     super(SCENES.stage);
@@ -70,6 +134,7 @@ export class StageScene extends Phaser.Scene {
     const save = saveStore.get();
     this.loadout = squadLoadout(save.buildings);
     this.hero = HEROES[save.hero];
+    this.tutorial = createTutorial(this.stage.number === 1 && !save.settings.tutorialDone);
   }
 
   create(): void {
@@ -79,10 +144,15 @@ export class StageScene extends Phaser.Scene {
     this.result = null;
     this.boss = null;
     this.fireAccumulator = 0;
+    this.bulletDamage = this.loadout.bulletDamage;
     this.skillReadyAt = 0;
     this.shieldUntil = 0;
     this.rapidUntil = 0;
+    this.lastBossShake = 0;
+    this.powerUps = EMPTY_POWERUPS;
     this.timeline = new Timeline(buildSchedule(this.stage));
+    this.scheduledDrops = scheduledPickups(this.stage.bossAt);
+    this.nextScheduledDrop = 0;
 
     this.road = this.add.tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, TEXTURES.road);
     this.squad = new Squad(this, GAME_WIDTH / 2, SQUAD.y, this.loadout.startingSoldiers, this.loadout.fireRate);
@@ -91,18 +161,23 @@ export class StageScene extends Phaser.Scene {
     );
     this.shieldRing = this.add.image(this.squad.x, this.squad.y + 40, TEXTURES.shield).setDepth(6).setTint(HEROES.doc.tint).setVisible(false);
     this.rapidRing = this.add.image(this.squad.x, this.squad.y + 40, TEXTURES.shield).setDepth(6).setTint(HEROES.blaze.tint).setVisible(false);
+    this.screenTint = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0xffffff, 0).setDepth(9);
 
-    this.bullets = this.physics.add.group({ classType: Bullet, maxSize: 300, runChildUpdate: true });
+    this.bullets = this.physics.add.group({ classType: Bullet, maxSize: 400, runChildUpdate: true });
     this.enemies = this.physics.add.group({ classType: Enemy, maxSize: 120, runChildUpdate: true });
     this.gates = this.physics.add.group({ classType: Gate, maxSize: 12, runChildUpdate: true });
     this.barriers = this.physics.add.group({ classType: Barrier, maxSize: 8, runChildUpdate: true });
     this.projectiles = this.physics.add.group({ classType: Projectile, maxSize: 30, runChildUpdate: true });
+    this.pickups = this.physics.add.group({ classType: Pickup, maxSize: 6, runChildUpdate: true });
+    this.grenades = Array.from({ length: 4 }, () => this.add.existing(new Grenade(this, 0, 0)) as Grenade);
+    this.fx = new StageFx(this);
 
     this.physics.add.overlap(this.bullets, this.enemies, this.onBulletHitsEnemy as Collider, undefined, this);
     this.physics.add.overlap(this.bullets, this.barriers, this.onBulletHitsBarrier as Collider, undefined, this);
     this.physics.add.overlap(this.enemies, this.squad.soldiers, this.onEnemyReachesSquad as Collider, undefined, this);
     this.physics.add.overlap(this.barriers, this.squad.soldiers, this.onBarrierHitsSquad as Collider, undefined, this);
     this.physics.add.overlap(this.projectiles, this.squad.soldiers, this.onProjectileHitsSquad as Collider, undefined, this);
+    this.physics.add.overlap(this.pickups, this.squad.soldiers, this.onPickupReachesSquad as Collider, undefined, this);
 
     this.events.on(Enemy.LEAKED, this.onEnemyLeaked, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.events.off(Enemy.LEAKED, this.onEnemyLeaked, this));
@@ -122,58 +197,77 @@ export class StageScene extends Phaser.Scene {
     this.scene.launch(SCENES.hud);
     this.scene.bringToTop(SCENES.hud);
     this.banner(this.stage.name, COLORS.accent, 1100);
+    audio.playMusic('combat');
+
+    if (this.tutorial.enabled) this.time.delayedCall(TUTORIAL_FIRST_CARD_MS, () => this.showTutorialStep('steer'));
   }
 
   update(time: number, delta: number): void {
     if (this.result) return;
+    this.fx.update(time);
+    if (isTutorialPaused(this.tutorial)) return;
 
     this.elapsed += delta / 1000;
     this.road.tilePositionY -= (this.stage.roadSpeed * delta) / 1000;
-    this.squad.update(delta, this.touch.targetX);
+    this.squad.update(delta, this.touch.targetX, time);
     this.countLabel.setPosition(this.squad.x, this.squad.y - 58).setText(`x${this.squad.count}`);
 
-    for (const event of this.timeline.advance(this.elapsed)) this.dispatch(event);
+    this.timeline.drain(this.elapsed, this.dispatchBound);
+    this.dropScheduledPickups();
 
     const fireRate = this.squad.stats.fireRate * (time < this.rapidUntil ? SKILLS.rapidFire.fireRateMultiplier : 1);
     const interval = fireIntervalMs(SQUAD.baseFireIntervalMs, fireRate, this.squad.count, SQUAD.minFireIntervalMs);
+    this.bulletDamage = this.loadout.bulletDamage * fireDamageMultiplier(SQUAD.baseFireIntervalMs, fireRate, this.squad.count, SQUAD.minFireIntervalMs);
     this.fireAccumulator += delta;
     while (this.fireAccumulator >= interval) {
       this.fireAccumulator -= interval;
-      this.fire();
+      this.fire(time);
     }
+    if (canThrowGrenade(this.powerUps, time)) this.tryThrowGrenade(time);
 
     this.updateBuffs(time);
     this.checkGateCrossings();
     if (this.boss?.active) this.boss.tick(time, delta);
+
+    if (this.tutorial.enabled) this.checkTutorialTriggers();
   }
 
+  /** Reuses one object per frame; callers must not hold on to it. */
   hudState(): HudState {
-    return {
-      stageName: this.stage.name,
-      progress: stageProgress(this.elapsed, this.stage.bossAt),
-      soldiers: this.squad.count,
-      maxSoldiers: SQUAD.maxSoldiers,
-      fireRate: this.squad.stats.fireRate,
-      kills: this.kills,
-      boss: this.boss?.active && this.boss.phase !== 'dead' ? { hp: Math.max(0, this.boss.hp), maxHp: this.boss.maxHp } : null,
-      skill: this.skillState(),
-    };
+    const now = this.time.now;
+    const h = this.hud;
+    h.stageName = this.stage.name;
+    h.progress = stageProgress(this.elapsed, this.stage.bossAt);
+    h.soldiers = this.squad.count;
+    h.fireRate = this.squad.stats.fireRate;
+    h.kills = this.kills;
+    if (this.boss?.active && this.boss.phase !== 'dead') {
+      this.bossHp.hp = Math.max(0, this.boss.hp);
+      this.bossHp.maxHp = this.boss.maxHp;
+      h.boss = this.bossHp;
+    } else {
+      h.boss = null;
+    }
+    this.skillState();
+    h.powerUps.spreadMs = spreadRemainingMs(this.powerUps, now);
+    h.powerUps.grenades = this.powerUps.grenades;
+    return h;
   }
 
   skillState(): SkillState {
     const now = this.time.now;
     const activeUntil = this.hero.skill === 'shield' ? this.shieldUntil : this.hero.skill === 'rapidFire' ? this.rapidUntil : 0;
-    return {
-      hero: this.hero,
-      cooldownRemainingMs: Math.max(0, this.skillReadyAt - now),
-      activeRemainingMs: Math.max(0, activeUntil - now),
-    };
+    const s = this.hud.skill;
+    s.hero = this.hero;
+    s.cooldownRemainingMs = Math.max(0, this.skillReadyAt - now);
+    s.activeRemainingMs = Math.max(0, activeUntil - now);
+    return s;
   }
 
   /** Fires the selected hero's skill if it is off cooldown. Called by the HUD button. */
   useSkill(): boolean {
     const now = this.time.now;
-    if (this.result || now < this.skillReadyAt) return false;
+    if (this.result || isTutorialPaused(this.tutorial) || now < this.skillReadyAt) return false;
     this.skillReadyAt = now + this.hero.cooldownMs;
     switch (this.hero.skill) {
       case 'airstrike':
@@ -188,8 +282,60 @@ export class StageScene extends Phaser.Scene {
         this.rapidRing.setVisible(true).setAlpha(0.7);
         break;
     }
-    this.floatText(this.squad.x, this.squad.y - 130, this.hero.skillName.toUpperCase(), '#ffffff');
+    audio.play('skill');
+    this.fx.floatText(this.squad.x, this.squad.y - 130, this.hero.skillName.toUpperCase(), '#ffffff');
     return true;
+  }
+
+  // ---- Tutorial ---------------------------------------------------------------
+
+  private showTutorialStep(step: TutorialStep): void {
+    if (this.result) return;
+    const { state, show } = triggerStep(this.tutorial, step);
+    this.tutorial = state;
+    if (!show) return;
+    this.physics.pause();
+    audio.play('tutorial');
+    (this.scene.get(SCENES.hud) as HudScene).showTutorial(step);
+  }
+
+  /** Closes the open tutorial card. Called by the HUD overlay. */
+  dismissTutorial(): void {
+    if (!isTutorialPaused(this.tutorial)) return;
+    this.tutorial = dismissStep(this.tutorial);
+    if (!this.result) this.physics.resume();
+    (this.scene.get(SCENES.hud) as HudScene).hideTutorial();
+    if (!this.tutorial.enabled) this.markTutorialDone();
+  }
+
+  skipTutorial(): void {
+    const paused = isTutorialPaused(this.tutorial);
+    this.tutorial = skipTutorial(this.tutorial);
+    if (paused && !this.result) this.physics.resume();
+    (this.scene.get(SCENES.hud) as HudScene).hideTutorial();
+    this.markTutorialDone();
+  }
+
+  private markTutorialDone(): void {
+    saveStore.update((s) => (s.settings.tutorialDone ? s : updateSettings(s, { tutorialDone: true })));
+  }
+
+  private checkTutorialTriggers(): void {
+    for (const child of this.gates.getChildren()) {
+      const gate = child as Gate;
+      if (gate.active && gate.y > 250 && !gate.triggered) {
+        this.showTutorialStep('gates');
+        break;
+      }
+    }
+    for (const child of this.barriers.getChildren()) {
+      const barrier = child as Barrier;
+      if (barrier.active && barrier.y > 250) {
+        this.showTutorialStep('barriers');
+        break;
+      }
+    }
+    if (this.elapsed >= TUTORIAL_SKILL_AT_S) this.showTutorialStep('skill');
   }
 
   // ---- Spawning ---------------------------------------------------------------
@@ -243,6 +389,8 @@ export class StageScene extends Phaser.Scene {
     });
     this.banner('BOSS', COLORS.bad, 1200);
     this.cameras.main.shake(300, 0.006);
+    audio.play('bossRoar');
+    if (this.tutorial.enabled) this.time.delayedCall(700, () => this.showTutorialStep('boss'));
   }
 
   private spawnProjectile(x: number, y: number): void {
@@ -250,66 +398,155 @@ export class StageScene extends Phaser.Scene {
     glob?.launch(x, y, this.squad.x, this.squad.y, BOSS.spitSpeed, 1);
   }
 
-  // ---- Firing -----------------------------------------------------------------
-
-  private fire(): void {
-    const muzzle = this.squad.muzzle();
-    const bullet = this.bullets.get(muzzle.x, muzzle.y) as Bullet | null;
-    if (!bullet) return;
-    const target = this.nearestTarget(muzzle.x, muzzle.y);
-    let velocity = { x: 0, y: -SQUAD.bulletSpeed };
-    if (target) {
-      // Lead the shot by the target's travel during the bullet's flight.
-      const flight = Phaser.Math.Distance.Between(muzzle.x, muzzle.y, target.x, target.y) / SQUAD.bulletSpeed;
-      velocity = aimVelocity(
-        muzzle.x,
-        muzzle.y,
-        target.x + target.vx * flight,
-        target.y + target.vy * flight,
-        SQUAD.bulletSpeed,
-        SQUAD.aimConeDeg,
-      );
-    }
-    bullet.fire(muzzle.x, muzzle.y, velocity.x, velocity.y, this.loadout.bulletDamage);
+  private spawnPickup(id: PowerUpId, x: number, y: number): void {
+    const pickup = this.pickups.get(x, y) as Pickup | null;
+    pickup?.spawn(id, Phaser.Math.Clamp(x, PICKUP_SIZE, GAME_WIDTH - PICKUP_SIZE), y, this.stage.roadSpeed);
   }
 
-  private nearestTarget(x: number, y: number): Target | null {
-    let best: Target | null = null;
+  private dropScheduledPickups(): void {
+    const next = this.scheduledDrops[this.nextScheduledDrop];
+    if (!next || this.elapsed < next.at) return;
+    this.nextScheduledDrop++;
+    const lane = LANES[Phaser.Math.Between(0, LANES.length - 1)] ?? 0.5;
+    this.spawnPickup(next.id, lane * GAME_WIDTH, SPAWN_Y);
+  }
+
+  // ---- Firing -----------------------------------------------------------------
+
+  private fire(time: number): void {
+    const muzzle = this.squad.muzzle();
+    const mx = muzzle.x;
+    const my = muzzle.y;
+    this.fx.muzzleFlash(mx, my - 6);
+    audio.play('shot', 0.9 + Math.random() * 0.2);
+    let vx = 0;
+    let vy = -SQUAD.bulletSpeed;
+    if (this.nearestTarget(mx, my)) {
+      const t = this.target;
+      // Lead the shot by the target's travel during the bullet's flight.
+      const flight = Phaser.Math.Distance.Between(mx, my, t.x, t.y) / SQUAD.bulletSpeed;
+      const v = aimVelocity(mx, my, t.x + t.vx * flight, t.y + t.vy * flight, SQUAD.bulletSpeed, SQUAD.aimConeDeg);
+      vx = v.x;
+      vy = v.y;
+    }
+    if (spreadActive(this.powerUps, time)) {
+      const fan = spreadVelocities(vx, vy, undefined, undefined, this.fanScratch);
+      for (const v of fan) this.shoot(mx, my, v.x, v.y);
+    } else {
+      this.shoot(mx, my, vx, vy);
+    }
+  }
+
+  private shoot(x: number, y: number, vx: number, vy: number): void {
+    const bullet = this.bullets.get(x, y) as Bullet | null;
+    bullet?.fire(x, y, vx, vy, this.bulletDamage);
+  }
+
+  /** Finds the closest live target ahead of (x, y) into `this.target`; returns false when there is none. */
+  private nearestTarget(x: number, y: number): boolean {
+    const t = this.target;
+    t.found = false;
     let bestDistance = Number.POSITIVE_INFINITY;
     const consider = (candidate: Phaser.Physics.Arcade.Image, vx: number, vy: number) => {
       if (!candidate.active || candidate.y >= y - 20) return;
       const distance = Phaser.Math.Distance.Between(x, y, candidate.x, candidate.y);
       if (distance < bestDistance) {
         bestDistance = distance;
-        best = { x: candidate.x, y: candidate.y, vx, vy };
+        t.x = candidate.x;
+        t.y = candidate.y;
+        t.vx = vx;
+        t.vy = vy;
+        t.found = true;
       }
     };
     for (const child of this.enemies.getChildren()) consider(child as Enemy, 0, (child as Enemy).speed);
     for (const child of this.barriers.getChildren()) consider(child as Barrier, 0, this.stage.roadSpeed);
     if (this.boss?.active && this.boss.phase !== 'dead') consider(this.boss, this.boss.velocityX, 0);
-    return best;
+    return t.found;
+  }
+
+  // ---- Grenades -----------------------------------------------------------------
+
+  private tryThrowGrenade(time: number): void {
+    const grenade = this.grenades.find((g) => !g.inFlight);
+    if (!grenade) return;
+    const flight = GRENADE.flightMs / 1000;
+    const candidates = this.blastScratch;
+    candidates.length = 0;
+    for (const child of this.enemies.getChildren()) {
+      const enemy = child as Enemy;
+      if (enemy.active) candidates.push({ x: enemy.x, y: enemy.y + enemy.speed * flight });
+    }
+    for (const child of this.barriers.getChildren()) {
+      const barrier = child as Barrier;
+      if (barrier.active) candidates.push({ x: Phaser.Math.Clamp(this.squad.x, barrier.x - 100, barrier.x + 100), y: barrier.y + this.stage.roadSpeed * flight });
+    }
+    if (this.boss?.active && this.boss.phase === 'fight') candidates.push({ x: this.boss.x + this.boss.velocityX * flight, y: this.boss.y });
+    const point = bestBlastPoint(candidates);
+    if (!point || point.y > this.squad.y - 60) return;
+
+    this.powerUps = throwGrenade(this.powerUps, time);
+    audio.play('grenadeThrow');
+    grenade.throwTo(this.squad.x, this.squad.y - 30, point.x, point.y, GRENADE.flightMs, (x, y) => this.explode(x, y));
+  }
+
+  private explode(x: number, y: number): void {
+    if (this.result) return;
+    const now = this.time.now;
+    const r = GRENADE.radius;
+    this.fx.explosion(x, y);
+    this.cameras.main.shake(260, 0.012);
+    this.pulseScreen(0xffd166, 0.18);
+    audio.play('explosion');
+
+    const enemyDamage = GRENADE.enemyDamage * this.stage.scaling.hp;
+    for (const child of this.enemies.getChildren()) {
+      const enemy = child as Enemy;
+      if (!enemy.active || Phaser.Math.Distance.Between(x, y, enemy.x, enemy.y) > r) continue;
+      if (enemy.hit(enemyDamage, now)) this.registerKill(enemy);
+      else this.fx.hitSparks(enemy.x, enemy.y, 0xffd166, 3);
+    }
+    for (const child of this.barriers.getChildren()) {
+      const barrier = child as Barrier;
+      if (!barrier.active) continue;
+      const halfWidth = (barrier.side === 'full' ? BARRIER_FULL_WIDTH : BARRIER_HALF_WIDTH) / 2;
+      const nearestX = Phaser.Math.Clamp(x, barrier.x - halfWidth, barrier.x + halfWidth);
+      if (Phaser.Math.Distance.Between(x, y, nearestX, barrier.y) > r) continue;
+      const damage = Math.round(GRENADE.barrierDamage * this.stage.scaling.hp);
+      this.fx.damage(barrier, barrier.x, barrier.y - 30, damage, '#ffffff', now);
+      if (barrier.hit(damage, now)) this.breakBarrier(barrier);
+    }
+    for (const child of this.projectiles.getChildren()) {
+      const glob = child as Projectile;
+      if (glob.active && Phaser.Math.Distance.Between(x, y, glob.x, glob.y) <= r) glob.despawn();
+    }
+    if (this.boss?.active && this.boss.phase === 'fight' && Phaser.Math.Distance.Between(x, y, this.boss.x, this.boss.y) <= r + 40) {
+      const damage = Math.round(this.boss.maxHp * GRENADE.bossFraction);
+      this.fx.damage(this.boss, this.boss.x, this.boss.y - 70, damage, COLORS.accent, now, true);
+      if (this.boss.hit(damage, now)) this.killBoss(this.boss);
+    }
   }
 
   // ---- Hero skills ------------------------------------------------------------
 
   private airstrike(): void {
+    const now = this.time.now;
     const enemyDamage = SKILLS.airstrike.enemyDamage * this.stage.scaling.hp;
     for (const child of this.enemies.getChildren()) {
       const enemy = child as Enemy;
       if (!enemy.active) continue;
-      this.burst(enemy.x, enemy.y, [0xff8c42, 0xffd166, 0xffffff], 12);
-      if (enemy.hit(enemyDamage, this.time.now)) {
-        this.kills += 1;
-        enemy.despawn();
-      }
+      this.fx.hitSparks(enemy.x, enemy.y, 0xff8c42, 6);
+      if (enemy.hit(enemyDamage, now)) this.registerKill(enemy);
     }
     for (const child of this.projectiles.getChildren()) (child as Projectile).despawn();
     if (this.boss?.active && this.boss.phase !== 'dead') {
-      this.burst(this.boss.x, this.boss.y, [0xff8c42, 0xffd166, 0xffffff], 24);
-      if (this.boss.hit(SKILLS.airstrike.bossDamage * this.stage.scaling.bossHp, this.time.now)) this.killBoss(this.boss);
+      const damage = SKILLS.airstrike.bossDamage * this.stage.scaling.bossHp;
+      this.fx.explosion(this.boss.x, this.boss.y);
+      this.fx.damage(this.boss, this.boss.x, this.boss.y - 70, damage, COLORS.accent, now, true);
+      if (this.boss.hit(damage, now)) this.killBoss(this.boss);
     }
     this.cameras.main.shake(350, 0.012);
-    this.cameras.main.flash(180, 255, 200, 120);
+    this.pulseScreen(0xffc878, 0.4);
   }
 
   private updateBuffs(time: number): void {
@@ -336,7 +573,12 @@ export class StageScene extends Phaser.Scene {
       if (!taken) continue;
       this.squad.applyGate(gate.effect);
       const penalty = isPenalty(gate.effect);
-      this.floatText(this.squad.x, this.squad.y - 90, gateLabel(gate.effect), penalty ? COLORS.bad : COLORS.good);
+      const color = penalty ? COLORS.gateBad : COLORS.gateGood;
+      this.fx.floatText(this.squad.x, this.squad.y - 90, gateLabel(gate.effect), penalty ? COLORS.bad : COLORS.good);
+      this.fx.ring(gate.x, gate.crossingY, color);
+      this.fx.hitSparks(gate.x, gate.crossingY, color, 10);
+      this.pulseScreen(color, penalty ? 0.28 : 0.18);
+      audio.play(penalty ? 'gateBad' : 'gateGood');
       if (penalty) this.cameras.main.shake(150, 0.004);
     }
   }
@@ -349,9 +591,10 @@ export class StageScene extends Phaser.Scene {
     if (!bullet.active || !enemy.active) return;
     bullet.despawn();
     if (enemy.hit(bullet.damage, this.time.now)) {
-      this.kills += 1;
-      this.burst(enemy.x, enemy.y, [enemy.def.tint, COLORS.bullet, 0xffffff], enemy.def.kind === 'brute' ? 18 : 10);
-      enemy.despawn();
+      this.registerKill(enemy);
+    } else {
+      this.fx.hitSparks(bullet.x, bullet.y, COLORS.bullet, 3);
+      audio.play('hit');
     }
   };
 
@@ -360,10 +603,11 @@ export class StageScene extends Phaser.Scene {
     const barrier = barrierObj as Barrier;
     if (!bullet.active || !barrier.active) return;
     bullet.despawn();
-    if (barrier.hit(bullet.damage, this.time.now)) {
-      this.burst(barrier.x, barrier.y, [COLORS.barrier, COLORS.barrierDark, 0xffffff], 20);
-      barrier.despawn();
-    }
+    const now = this.time.now;
+    this.fx.hitSparks(bullet.x, barrier.y + BARRIER_HEIGHT / 2, 0xdddddd, 3);
+    this.fx.damage(barrier, barrier.x, barrier.y - 30, bullet.damage, '#ffffff', now);
+    audio.play('barrierHit');
+    if (barrier.hit(bullet.damage, now)) this.breakBarrier(barrier);
   };
 
   private onBulletHitsBoss = (a: unknown, b: unknown): void => {
@@ -372,12 +616,43 @@ export class StageScene extends Phaser.Scene {
     const boss = (a instanceof Boss ? a : b) as Boss;
     if (!bullet.active || !boss.active || boss.phase === 'dead') return;
     bullet.despawn();
-    if (boss.hit(bullet.damage, this.time.now)) this.killBoss(boss);
+    const now = this.time.now;
+    this.fx.hitSparks(bullet.x, bullet.y, 0xd58cff, 3);
+    this.fx.damage(boss, boss.x, boss.y - 70, bullet.damage, COLORS.accent, now, true);
+    audio.play('bossHit');
+    if (now - this.lastBossShake > BOSS_SHAKE_GAP_MS) {
+      this.lastBossShake = now;
+      this.cameras.main.shake(60, 0.002);
+    }
+    if (boss.hit(bullet.damage, now)) this.killBoss(boss);
   };
 
+  private registerKill(enemy: Enemy): void {
+    this.kills += 1;
+    this.fx.deathBurst(enemy.x, enemy.y, enemy.def.burstTint, enemy.def.kind === 'brute' ? 22 : 12);
+    audio.play('kill', enemy.def.kind === 'brute' ? 0.6 : enemy.def.kind === 'runner' ? 1.3 : 1);
+    const drop = pickupForKill(this.kills);
+    if (drop) {
+      // Drop where the zombie died if there is still road to react on, else from the top.
+      const fromKill = enemy.y < this.squad.y - 260;
+      this.spawnPickup(drop, enemy.x, fromKill ? enemy.y : SPAWN_Y);
+    }
+    enemy.despawn();
+  }
+
+  private breakBarrier(barrier: Barrier): void {
+    this.fx.deathBurst(barrier.x, barrier.y, COLORS.barrier, 20);
+    this.fx.ring(barrier.x, barrier.y, 0xffffff);
+    audio.play('barrierBreak');
+    barrier.despawn();
+  }
+
   private killBoss(boss: Boss): void {
-    this.burst(boss.x, boss.y, [COLORS.bossBar, COLORS.bullet, 0xffffff], 40);
+    this.fx.explosion(boss.x, boss.y);
+    this.fx.deathBurst(boss.x, boss.y, boss.def.burstTint, 50);
     this.cameras.main.shake(400, 0.01);
+    this.pulseScreen(0xffffff, 0.6);
+    audio.play('bossDeath');
     boss.despawn();
     this.endStage(true);
   }
@@ -392,7 +667,7 @@ export class StageScene extends Phaser.Scene {
   private onBarrierHitsSquad = (barrierObj: unknown): void => {
     const barrier = barrierObj as Barrier;
     if (!barrier.active || this.result) return;
-    this.burst(barrier.x, barrier.y, [COLORS.barrier, COLORS.barrierDark], 16);
+    this.fx.deathBurst(barrier.x, barrier.y, COLORS.barrier, 16);
     barrier.despawn();
     this.hurtSquad(this.stage.barrierDamage, this.squad.x, this.squad.y);
   };
@@ -404,20 +679,35 @@ export class StageScene extends Phaser.Scene {
     this.hurtSquad(glob.damage, glob.x, glob.y);
   };
 
+  private onPickupReachesSquad = (pickupObj: unknown): void => {
+    const pickup = pickupObj as Pickup;
+    if (!pickup.active || this.result) return;
+    const def = POWERUPS[pickup.id];
+    this.powerUps = collectPowerUp(this.powerUps, pickup.id, this.time.now);
+    this.fx.ring(pickup.x, pickup.y, def.tint);
+    this.fx.hitSparks(pickup.x, pickup.y, def.tint, 12);
+    this.fx.floatText(this.squad.x, this.squad.y - 130, def.name.toUpperCase(), def.textColor, 34);
+    audio.play('pickup');
+    pickup.despawn();
+  };
+
   private onEnemyLeaked(): void {
     this.leaked += 1;
   }
 
   private hurtSquad(damage: number, x: number, y: number): void {
-    if (this.time.now < this.shieldUntil) {
-      this.burst(x, y, [0x4cc9f0, 0xffffff], 6);
+    const now = this.time.now;
+    if (now < this.shieldUntil) {
+      this.fx.hitSparks(x, y, 0x4cc9f0, 6);
       return;
     }
-    const lost = this.squad.takeHit(damage);
+    const lost = this.squad.takeHit(damage, now);
     if (lost <= 0) return;
-    this.burst(x, y, [0xff4d4d, COLORS.soldier, 0xffffff], 8 + lost * 4);
+    this.fx.deathBurst(x, y, 0xff4d4d, 8 + lost * 4);
     this.cameras.main.shake(140, 0.005);
-    this.floatText(this.squad.x, this.squad.y - 90, `-${lost}`, COLORS.bad);
+    this.pulseScreen(0xff2a2a, 0.35);
+    audio.play('soldierLost');
+    this.fx.floatText(this.squad.x, this.squad.y - 90, `-${lost}`, COLORS.bad);
     if (!this.squad.alive) this.endStage(false);
   }
 
@@ -427,7 +717,9 @@ export class StageScene extends Phaser.Scene {
     if (this.result) return;
     this.result = won ? 'won' : 'lost';
     this.physics.pause();
+    (this.scene.get(SCENES.hud) as HudScene).hideTutorial();
     this.banner(won ? 'STAGE CLEAR' : 'SQUAD LOST', won ? COLORS.good : COLORS.bad, RESULTS_DELAY_MS);
+    audio.play(won ? 'stageClear' : 'stageLost');
 
     const outcome = { won, kills: this.kills, soldiers: this.squad.count, timeMs: Math.round(this.elapsed * 1000) };
     let reward: ResultsData['reward'] = null;
@@ -450,38 +742,18 @@ export class StageScene extends Phaser.Scene {
 
   // ---- FX ---------------------------------------------------------------------
 
-  private burst(x: number, y: number, tint: number[], count: number): void {
-    const emitter = this.add.particles(x, y, TEXTURES.spark, {
-      speed: { min: 80, max: 280 },
-      lifespan: 350,
-      scale: { start: 1, end: 0 },
-      tint,
-      emitting: false,
-    });
-    emitter.setDepth(7).explode(count);
-    this.time.delayedCall(450, () => emitter.destroy());
-  }
-
-  private floatText(x: number, y: number, text: string, color: string): void {
-    const label = this.add
-      .text(x, y, text, {
-        fontFamily: FONT,
-        fontSize: '38px',
-        fontStyle: '900',
-        color,
-        stroke: '#000000',
-        strokeThickness: 8,
-      })
-      .setOrigin(0.5)
-      .setDepth(8);
-    this.tweens.add({ targets: label, y: y - 90, alpha: 0, duration: 900, ease: 'Cubic.easeOut', onComplete: () => label.destroy() });
+  /** Brief full-screen colour wash, softer than the camera's own flash. */
+  private pulseScreen(color: number, alpha: number): void {
+    this.tweens.killTweensOf(this.screenTint);
+    this.screenTint.setFillStyle(color, alpha);
+    this.tweens.add({ targets: this.screenTint, fillAlpha: 0, duration: 220, ease: 'Quad.easeOut' });
   }
 
   private banner(text: string, color: string, holdMs: number): void {
     const label = this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, text, {
         fontFamily: FONT,
-        fontSize: '84px',
+        fontSize: '72px',
         fontStyle: '900',
         color,
         stroke: '#000000',
